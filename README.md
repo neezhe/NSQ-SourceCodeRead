@@ -1,5 +1,5 @@
 # NSQ-SourceCodeRead
-read the source code for deep understanding the message queue.
+## read the source code for deep understanding the message queue.
 
 <p align="center">
 <img align="left" width="175" src="http://nsq.io/static/img/nsq_blue.png">

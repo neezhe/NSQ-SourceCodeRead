@@ -25,7 +25,7 @@ type NSQLookupd struct {
 	opts         *Options  //在文件nsqlookupd/options.go中定义，记录NSQLookupd的配置信息
 	tcpListener  net.Listener //记录监听的文件描述符
 	httpListener net.Listener
-	waitGroup    util.WaitGroupWrapper //在文件internal/util/wait_group_wrapper.go中定义，与sync.WaitGroup相关，用于线程同步
+	waitGroup    util.WaitGroupWrapper //很重要，在文件internal/util/wait_group_wrapper.go中定义，与sync.WaitGroup相关，用于同步
 	DB           *RegistrationDB //在文件nsqlookupd/registration_db.go中定义，与数据存储有关
 }
 //根据配置的nsqlookupd options信息，创建一个NSQLookupd实例
@@ -37,7 +37,7 @@ func New(opts *Options) (*NSQLookupd, error) {
 	}
 	l := &NSQLookupd{
 		opts: opts,
-		DB:   NewRegistrationDB(),
+		DB:   NewRegistrationDB(), //需要注意的是这个结构，见有道笔记有图
 	}
 
 	l.logf(LOG_INFO, version.String("nsqlookupd"))
@@ -65,28 +65,27 @@ func (l *NSQLookupd) Main() error {
 	var once sync.Once
 	exitFunc := func(err error) {
 		once.Do(func() {
-			if err != nil {
+			if err != nil {  //通过err值来判断
 				l.logf(LOG_FATAL, "%s", err)
 			}
 			exitCh <- err
 		})
 	}
 
-	tcpServer := &tcpServer{ctx: ctx}  //tcpServer实例，在文件nsqlookupd/tcp.go中定义，处理TCP接收到的数据
-	//使用sync.WaitGroup，关于sync.WaitGroup介绍，http://blog.csdn.net/aslackers/article/details/62046306
-	//通过下面的Exit()方法，可知，当关闭nsqlookupd进程时，主线程(goroutine)会等待所有TCP监听关闭，才关闭自己
-	l.waitGroup.Wrap(func() {
-		//在文件internal/protocol/tcp_server.go中定义，
-		//接收监听并处理TCP数据
-		//第二个参数tcpServer实现了internal/protocol/tcp_server.go文件中定义的TCPHandler接口
-		//tcpServer接收到TCP数据时，会调用其Handle()方法(nsqlookupd/tcp.go)处理。
+	tcpServer := &tcpServer{ctx: ctx}  //tcpServer实例
+	//使用l.waitGroup.Wrap装饰器，关于sync.WaitGroup介绍，http://blog.csdn.net/aslackers/article/details/62046306
+	//在Exit()中有用到，可知当关闭nsqlookupd进程时，主线程(goroutine)会等待所有TCP监听关闭，才关闭自己
+	l.waitGroup.Wrap(func() {//Wrap中会开一个routine,并同步计数
+		//运行TCP服务，用于处理nsqd上报信息的.
+		//第二个参数tcpServer实现了TCPHandler接口，tcpServer接收到TCP数据时，会调用其Handle()方法处理。
 		exitFunc(protocol.TCPServer(l.tcpListener, tcpServer, l.logf))
-	})
+	}) //nsqd连接到nsqlookupd的tcp监听上，通过心跳告诉nsqlookupd自己在线
 
 	//httpServer实例，在文件nsqlookupd/http.go中定义，处理HTTP接收到的数据
 	//并定义了一系列HTTP接口(路由)
 	httpServer := newHTTPServer(ctx)
 	l.waitGroup.Wrap(func() {
+		//运行http服务用于向nsqadmin提供查询接口的，本质上，就是一个web服务器，提供http查询接口
 		exitFunc(http_api.Serve(l.httpListener, httpServer, "HTTP", l.logf))
 	})
 
@@ -110,5 +109,5 @@ func (l *NSQLookupd) Exit() {
 	if l.httpListener != nil {
 		l.httpListener.Close()
 	}
-	l.waitGroup.Wait()
+	l.waitGroup.Wait() //waitGroup.Wrap修饰的函数都是几个重要的函数，所以此处需要通过同步来控制。
 }

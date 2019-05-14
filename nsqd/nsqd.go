@@ -270,8 +270,8 @@ func (n *NSQD) Main() error {
 		})
 	}
 
-	n.waitGroup.Wrap(n.queueScanLoop)
-	n.waitGroup.Wrap(n.lookupLoop)
+	n.waitGroup.Wrap(n.queueScanLoop) //循环处理消息的分发
+	n.waitGroup.Wrap(n.lookupLoop) //该循环是一个死循环，其中有一项功能就是发送心跳值，告诉所有的nsqlookupd，自己还活着。
 	if n.getOpts().StatsdAddress != "" {
 		n.waitGroup.Wrap(n.statsdLoop)
 	}

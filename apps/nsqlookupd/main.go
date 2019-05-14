@@ -16,6 +16,8 @@ import (
 	"github.com/nsqio/nsq/nsqlookupd"
 )
 
+//nsqlookupd实际工作中主要调用的是Init，Start,Stop三个函数。
+
 func nsqlookupdFlagSet(opts *nsqlookupd.Options) *flag.FlagSet {
 	flagSet := flag.NewFlagSet("nsqlookupd", flag.ExitOnError)
 
@@ -49,6 +51,7 @@ func main() {
 	}
 }
 
+//Init函数判断了当前的操作系统环境，如果是windwos系统的话，就会将修改工作目录。可以参考https://github.com/judwhite/go-svc首页的例子。
 func (p *program) Init(env svc.Environment) error {
 	if env.IsWindowsService() {
 		dir := filepath.Dir(os.Args[0])
@@ -68,13 +71,13 @@ func (p *program) Init(env svc.Environment) error {
 //nsqloopupd进程退出时，调用NSQLookupd实例的Exit()方法，关闭TCP和HTTP监听，主线程(goroutine)等待子线程(goroutine)退出，程序退出
 
 
-func (p *program) Start() error {  //这个代码在svc.Run中会被调用。
+func (p *program) Start() error {  //这个代码在svc.Run中会被调用。此处才是nsqlookupd的主体功能。
 	opts := nsqlookupd.NewOptions()
 
 	flagSet := nsqlookupdFlagSet(opts)
 	flagSet.Parse(os.Args[1:]) //解析所有的flag
 
-	if flagSet.Lookup("version").Value.(flag.Getter).Get().(bool) {
+	if flagSet.Lookup("version").Value.(flag.Getter).Get().(bool) { //如果只是查询版本信息，那么查完就返回
 		fmt.Println(version.String("nsqlookupd"))
 		os.Exit(0)
 	}
@@ -89,7 +92,7 @@ func (p *program) Start() error {  //这个代码在svc.Run中会被调用。
 	}
 
 	options.Resolve(opts, flagSet, cfg)
-	nsqlookupd, err := nsqlookupd.New(opts)
+	nsqlookupd, err := nsqlookupd.New(opts) //此处会开启tcp/http监听,Main中会开始accept
 	if err != nil {
 		logFatal("failed to instantiate nsqlookupd", err)
 	}
@@ -105,10 +108,12 @@ func (p *program) Start() error {  //这个代码在svc.Run中会被调用。
 
 	return nil
 }
-
+//Stop函数接受外界的signal，如果收到syscall.SIGINT和syscall.SIGTERM信号，就会被调用。svc这个包负责监听这两个信号，在main函数中已经指明了。
+//syscall.SIGINT：ctrl+c信号os.Interrupt，中断。
+//syscall.SIGTERM：pkill信号syscall.SIGTERM，关闭此服务。
 func (p *program) Stop() error {
 	p.once.Do(func() {
-		p.nsqlookupd.Exit()
+		p.nsqlookupd.Exit() //调用Exit函数，关闭了tcp服务和http服务，然后等两个服务关闭之后，程序结束。“等两个服务关闭”这个动作涉及到goroutine同步，nsq通过WaitGroup(参考Goroutine同步)实现。
 	})
 	return nil
 }

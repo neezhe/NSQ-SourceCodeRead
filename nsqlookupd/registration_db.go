@@ -12,12 +12,11 @@ import (
 
 //定义类型RegistrationDB，字面意思：注册数据库，保存nsqd的注册信息
 //按照官网的quick start操作，查看终端输出，可发现nsqd每15秒通过4160端口向nsqlookupd发送心跳包
-//简单跟踪nsqlookupd/nsqlookupd.go中的protocol.TCPServer(tcpListener, tcpServer, l.opts.Logger)，
-//可发现RegistrationDB保存nsqd的注册信息
-
-type RegistrationDB struct {
+//简单跟踪nsqlookupd/nsqlookupd.go中的protocol.TCPServer(tcpListener, tcpServer, l.opts.Logger)，可发现RegistrationDB保存nsqd的注册信息
+// RegistrationDB 以 map 结构包含了所有节点信息; 名为db, 实则最多算个cache罢了,但是实现了一系列的增删改查封装，同时使用RWMutex做并发控制。
+type RegistrationDB struct { //见有道笔记图解
 	sync.RWMutex
-	registrationMap map[Registration]ProducerMap
+	registrationMap map[Registration]ProducerMap //以 Registration 为 key 储存 Producers, 即生产者nsqd。把topic/channel和nsqdl关联起来。
 }
 //nsqd首次注册时，Category:client Key: SubKey:
 //nsqd有topic时，Category:topic Key:test SubKey: Key为topic名称
@@ -40,7 +39,7 @@ type PeerInfo struct {
 }
 //对于nsqlookupd来说，它的producer就是nsqd
 type Producer struct {
-	peerInfo     *PeerInfo
+	peerInfo     *PeerInfo //// 节点信息
 	//是否删除，关于tombstones官网有介绍http://nsq.io/components/nsqlookupd.html#deletion_tombstones
 	//英语不行，看不懂，网上查了一下，有翻译成逻辑删除的意思，目前还没搞懂这块
 	//大体知道是和删除nsqd有关
@@ -68,8 +67,7 @@ func (p *Producer) IsTombstoned(lifetime time.Duration) bool {
 //新建RegistrationDB类型变量
 func NewRegistrationDB() *RegistrationDB {
 	return &RegistrationDB{
-		//make一个map
-		registrationMap: make(map[Registration]ProducerMap),
+		registrationMap: make(map[Registration]ProducerMap), //make一个
 	}
 }
 // add a registration key

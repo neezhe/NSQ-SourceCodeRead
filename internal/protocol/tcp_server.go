@@ -12,13 +12,13 @@ import (
 type TCPHandler interface {
 	Handle(net.Conn)
 }
-
+//这个TCPServer函数是公共函数部分，用于nsqlookupd,nsqd的tcp服务
 func TCPServer(listener net.Listener, handler TCPHandler, logf lg.AppLogFunc) error {
 	logf(lg.INFO, "TCP: listening on %s", listener.Addr())
 
-	for {
-		clientConn, err := listener.Accept()
-		if err != nil {
+	for {  //tcp已经close时，退出for循环
+		clientConn, err := listener.Accept() //会阻塞
+		if err != nil {//针对不同的错误级别，采用不同的处理方式
 			if nerr, ok := err.(net.Error); ok && nerr.Temporary() {
 				logf(lg.WARN, "temporary Accept() failure - %s", err)
 				runtime.Gosched()

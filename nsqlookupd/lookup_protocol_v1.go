@@ -20,24 +20,26 @@ import (
 type LookupProtocolV1 struct {
 	ctx *Context
 }
-
+//在这个循环中不断执行nsqd服务的请求
 func (p *LookupProtocolV1) IOLoop(conn net.Conn) error {
 	var err error
 	var line string
 
 	client := NewClientV1(conn)
-	reader := bufio.NewReader(client)
-	for {
-		line, err = reader.ReadString('\n')
+	reader := bufio.NewReader(client)//将client封装成一个拥有size大小缓存的 bufio.Reader对象
+	for {//读取请求命令
+		line, err = reader.ReadString('\n')//持续的从tcp连接中读取数据包，直到遇到'\n'，也包括'\n'，功能同 ReadBytes，只不过返回的是字符串。内部有copy,ReadLine更快，没有copy.
 		if err != nil {
 			break
 		}
 
 		line = strings.TrimSpace(line)
+		//按空格切割用户请求，params存储的就是用户请求命令以及参数,这个参数是啥？请看nsqd的代码。
 		params := strings.Split(line, " ")
 
 		var response []byte
-		response, err = p.Exec(client, reader, params)
+		//执行请求并返回结果
+		response, err = p.Exec(client, reader, params) //进去看看
 		if err != nil {
 			ctx := ""
 			if parentErr := err.(protocol.ChildErr).Parent(); parentErr != nil {
@@ -45,7 +47,7 @@ func (p *LookupProtocolV1) IOLoop(conn net.Conn) error {
 			}
 			p.ctx.nsqlookupd.logf(LOG_ERROR, "[%s] - %s%s", client, err, ctx)
 
-			_, sendErr := protocol.SendResponse(client, []byte(err.Error()))
+			_, sendErr := protocol.SendResponse(client, []byte(err.Error()))//将错误信息发送给客户端
 			if sendErr != nil {
 				p.ctx.nsqlookupd.logf(LOG_ERROR, "[%s] - %s%s", client, sendErr, ctx)
 				break
@@ -65,7 +67,7 @@ func (p *LookupProtocolV1) IOLoop(conn net.Conn) error {
 			}
 		}
 	}
-
+	//如果上面的循环终止了(程序退出或致命错误)，关闭客户端连接，并删除客户端的所有注册信息
 	conn.Close()
 	p.ctx.nsqlookupd.logf(LOG_INFO, "CLIENT(%s): closing", client)
 	if client.peerInfo != nil {
@@ -80,15 +82,21 @@ func (p *LookupProtocolV1) IOLoop(conn net.Conn) error {
 	return err
 }
 
+//当客户端初始化完后，首先发送IDENTIFY操作，辨认身份，再发送REGISTER 注册一个Registration category:client key: subkey:
+//如果客户端新增一个topic，发送REGISTER，注册这个topic
+//如果客户端删除一个topic，发送UNREGISTER，注销即删除这个注册信息
+//TODO 客户端新增或删除channel时，是否调用REGISTER UNREGISTER操作，待确认
+//客户端每15秒发送一个PING操作
 func (p *LookupProtocolV1) Exec(client *ClientV1, reader *bufio.Reader, params []string) ([]byte, error) {
 	switch params[0] {
-	case "PING":
+	case "PING":  //nsqd每隔一段时间都会向nsqlookupd发送心跳，表明自己还活着；
 		return p.PING(client, params)
-	case "IDENTIFY":
+	case "IDENTIFY": //当nsqd第一次连接nsqlookupd时，发送IDENTITY，验证自己身份；
 		return p.IDENTIFY(client, reader, params[1:])
-	case "REGISTER":
+	case "REGISTER": //当nsqd创建一个topic或者channel时，向nsqlookupd发送REGISTER请求，在nsqlookupd上更新当前nsqd的topic或者channel信息；
 		return p.REGISTER(client, reader, params[1:])
-	case "UNREGISTER":
+	case "UNREGISTER"://当nsqd删除一个topic或者channel时，向nsqlookupd发送UNREGISTER请求，在nsqlookupd上更新当前nsqd的topic或者channel信息；
+	//具体各个命令怎么执行，这里就不去分析了；需要提一点是，nsqd的信息是保存在registration_db这样的实例里面的；
 		return p.UNREGISTER(client, reader, params[1:])
 	}
 	return nil, protocol.NewFatalClientErr(nil, "E_INVALID", fmt.Sprintf("invalid command %s", params[0]))
@@ -115,17 +123,19 @@ func getTopicChan(command string, params []string) (string, string, error) {
 
 	return topicName, channelName, nil
 }
-
+//client新建topic时，执行REGISTER操作，注册信息
+//TODO client新建channel时，是否执行REGISTER，待确认
 func (p *LookupProtocolV1) REGISTER(client *ClientV1, reader *bufio.Reader, params []string) ([]byte, error) {
-	if client.peerInfo == nil {
+	if client.peerInfo == nil {//必须先执行IDENTIFY操作
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "client must IDENTIFY")
 	}
-
+	//获取topic名称和channel名称
+	//猜测REGISTER时，client发送的消息为 "REGISTER topicName channelName"
 	topic, channel, err := getTopicChan("REGISTER", params)
 	if err != nil {
 		return nil, err
 	}
-
+	//注册信息到RegistrationDB
 	if channel != "" {
 		key := Registration{"channel", topic, channel}
 		if p.ctx.nsqlookupd.DB.AddProducer(key, &Producer{peerInfo: client.peerInfo}) {
@@ -190,11 +200,12 @@ func (p *LookupProtocolV1) UNREGISTER(client *ClientV1, reader *bufio.Reader, pa
 
 	return []byte("OK"), nil
 }
-
+//客户端初始化后，先进行IDENTIFY操作，验证身份，初始化peerInfo
+//IDENTIFY操作在四个操作中最先执行，且只执行一次
 func (p *LookupProtocolV1) IDENTIFY(client *ClientV1, reader *bufio.Reader, params []string) ([]byte, error) {
 	var err error
 
-	if client.peerInfo != nil {
+	if client.peerInfo != nil {//已经验证过身份了
 		return nil, protocol.NewFatalClientErr(err, "E_INVALID", "cannot IDENTIFY again")
 	}
 
@@ -211,7 +222,7 @@ func (p *LookupProtocolV1) IDENTIFY(client *ClientV1, reader *bufio.Reader, para
 	}
 
 	// body is a json structure with producer information
-	peerInfo := PeerInfo{id: client.RemoteAddr().String()}
+	peerInfo := PeerInfo{id: client.RemoteAddr().String()}//将客户端的地址作为peerInfo的唯一标识符
 	err = json.Unmarshal(body, &peerInfo)
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_BODY", "IDENTIFY failed to decode JSON body")
@@ -219,22 +230,22 @@ func (p *LookupProtocolV1) IDENTIFY(client *ClientV1, reader *bufio.Reader, para
 
 	peerInfo.RemoteAddress = client.RemoteAddr().String()
 
-	// require all fields
+	// require all fields//验证数据完整性
 	if peerInfo.BroadcastAddress == "" || peerInfo.TCPPort == 0 || peerInfo.HTTPPort == 0 || peerInfo.Version == "" {
 		return nil, protocol.NewFatalClientErr(nil, "E_BAD_BODY", "IDENTIFY missing fields")
 	}
 
-	atomic.StoreInt64(&peerInfo.lastUpdate, time.Now().UnixNano())
+	atomic.StoreInt64(&peerInfo.lastUpdate, time.Now().UnixNano())//修改peerInfo的lastUpdate为当前时间，不理解为什么这样做
 
 	p.ctx.nsqlookupd.logf(LOG_INFO, "CLIENT(%s): IDENTIFY Address:%s TCP:%d HTTP:%d Version:%s",
 		client, peerInfo.BroadcastAddress, peerInfo.TCPPort, peerInfo.HTTPPort, peerInfo.Version)
-
+	//将当前client注册到RegistrationDB里，Registration的Category是"client"， Key和SubKey都为空
 	client.peerInfo = &peerInfo
 	if p.ctx.nsqlookupd.DB.AddProducer(Registration{"client", "", ""}, &Producer{peerInfo: client.peerInfo}) {
 		p.ctx.nsqlookupd.logf(LOG_INFO, "DB: client(%s) REGISTER category:%s key:%s subkey:%s", client, "client", "", "")
 	}
 
-	// build a response
+	// build a response//构建响应数据给client
 	data := make(map[string]interface{})
 	data["tcp_port"] = p.ctx.nsqlookupd.RealTCPAddr().Port
 	data["http_port"] = p.ctx.nsqlookupd.RealHTTPAddr().Port
@@ -257,11 +268,11 @@ func (p *LookupProtocolV1) IDENTIFY(client *ClientV1, reader *bufio.Reader, para
 func (p *LookupProtocolV1) PING(client *ClientV1, params []string) ([]byte, error) {
 	if client.peerInfo != nil {
 		// we could get a PING before other commands on the same client connection
-		cur := time.Unix(0, atomic.LoadInt64(&client.peerInfo.lastUpdate))
+		cur := time.Unix(0, atomic.LoadInt64(&client.peerInfo.lastUpdate)) //通过 Unix 时间戳生成 time.Time 实例
 		now := time.Now()
 		p.ctx.nsqlookupd.logf(LOG_INFO, "CLIENT(%s): pinged (last ping %s)", client.peerInfo.id,
 			now.Sub(cur))
-		atomic.StoreInt64(&client.peerInfo.lastUpdate, now.UnixNano())
+		atomic.StoreInt64(&client.peerInfo.lastUpdate, now.UnixNano()) //赋予变量新值，而不管它原来是什么值。
 	}
 	return []byte("OK"), nil
 }

@@ -349,7 +349,7 @@ func (n *NSQD) LoadMetadata() error {
 			n.logf(LOG_WARN, "skipping creation of invalid topic %s", t.Name)
 			continue
 		}
-		topic := n.GetTopic(t.Name)//获取指向该topic对象的指针(nsqd/topic.go中Topic struct)
+		topic := n.GetTopic(t.Name)//获取指向该topic对象的指针(nsqd/topic.go中Topic struct),如果topic不存在，会自动创建一个
 		if t.Paused {//topic暂停使用，标注到topic对象中
 			topic.Pause()
 		}
@@ -460,26 +460,30 @@ func (n *NSQD) Exit() {
 
 // GetTopic performs a thread safe operation
 // to return a pointer to a Topic object (potentially new)
+//消息获取函数，函数会先简单获取一把读锁看topic是否已经存在，如果已经存在直接返回，如果不存在就到后面的创建，初始化流程。
 func (n *NSQD) GetTopic(topicName string) *Topic {
 	// most likely, we already have this topic, so try read lock first.
-	n.RLock()
+	n.RLock() //先锁着看一下有没有
 	t, ok := n.topicMap[topicName]
 	n.RUnlock()
 	if ok {
 		return t
 	}
-
+	//不存在这topc，得new一个了,  所以直接加锁了整个nsqd结构
 	n.Lock()
 
 	t, ok = n.topicMap[topicName]
-	if ok {
+	if ok {//还有种情况，就在刚才那一瞬间，有其他协程进来了，他new了一个，所以获取锁后还得判断一下是否存在
 		n.Unlock()
 		return t
 	}
 	deleteCallback := func(t *Topic) {
-		n.DeleteExistingTopic(t.name)
+		n.DeleteExistingTopic(t.name)//topic的删除函数
 	}
-	t = NewTopic(topicName, &context{n}, deleteCallback)
+	//创建一个topic结构，并且里面初始化好diskqueue, 加入到NSQD的topicmap里面
+	//创建topic的时候，会开启消息协程
+
+	t = NewTopic(topicName, &context{n}, deleteCallback) //创建topic
 	n.topicMap[topicName] = t
 
 	n.Unlock()
@@ -494,6 +498,7 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 
 	// if using lookupd, make a blocking call to get the topics, and immediately create them.
 	// this makes sure that any message received is buffered to the right channels
+	//lookupd里面存储所有之前的channel信息，所以这里加载一下，这样消息能不丢
 	lookupdHTTPAddrs := n.lookupdHTTPAddrs()
 	if len(lookupdHTTPAddrs) > 0 {
 		channelNames, err := n.ci.GetLookupdTopicChannels(t.name, lookupdHTTPAddrs)
@@ -501,9 +506,11 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 			n.logf(LOG_WARN, "failed to query nsqlookupd for channels to pre-create for topic %s - %s", t.name, err)
 		}
 		for _, channelName := range channelNames {
-			if strings.HasSuffix(channelName, "#ephemeral") {
+			if strings.HasSuffix(channelName, "#ephemeral") { //临时topic不需要预先创建，用到的时候再创建就行
 				continue // do not create ephemeral channel with no consumer client
 			}
+			//预先创建一个channel，原因呢？为了让消息能够及时的入队.
+			//比如，我这个nsq重启了，那么重启的这时刻，需要加载曾经的所有channel，以备每一个channel的消息不丢。不然只能等着对方create了，不方便
 			t.GetChannel(channelName)
 		}
 	} else if len(n.getOpts().NSQLookupdTCPAddresses) > 0 {

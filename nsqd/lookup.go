@@ -11,7 +11,7 @@ import (
 	"github.com/nsqio/go-nsq"
 	"github.com/nsqio/nsq/internal/version"
 )
-
+// 链接之后，执行IDENTIFY操作
 func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 	return func(lp *lookupPeer) {
 		ci := make(map[string]interface{})
@@ -26,7 +26,7 @@ func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 			lp.Close()
 			return
 		}
-		resp, err := lp.Command(cmd)
+		resp, err := lp.Command(cmd) // 执行IDENTIFY操作
 		if err != nil {
 			n.logf(LOG_ERROR, "LOOKUPD(%s): %s - %s", lp, cmd, err)
 			return
@@ -74,15 +74,15 @@ func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 		}
 	}
 }
-//1.连接nsqlookupd服务，执行IDENTIFY操作；
+//1.nsqd连接nsqlookupd服务，执行IDENTIFY操作；
 //2.将nsqd的Metadata中的topic、channel注册到nsqlookupd服务;
 //3.15秒心跳一次，对nsqlookupd执行一次PING操作
 //4.新增或删除topic、channel时，REGISTER或UNREGISTER到nsqlookupd服务。
 func (n *NSQD) lookupLoop() {
-	var lookupPeers []*lookupPeer
-	var lookupAddrs []string
-	connect := true
-
+	var lookupPeers []*lookupPeer// 已连接的lookupd服务实例
+	var lookupAddrs []string// 已链接的lookupd服务地址
+	connect := true //connect默认为true，会执行这段代码，连接到nsqlookupd服务，执行IDENTIFY操作。然后将connect设为false，避免再次执行。
+	//添加或减少nsqlookupd服务时，会对已连接的nsqlookupd进行过滤（主要针对减少nsqlookupd服务），然后将connect设置为true，再次执行上面的连接操作。
 	hostname, err := os.Hostname()
 	if err != nil {
 		n.logf(LOG_FATAL, "failed to get hostname - %s", err)
@@ -111,7 +111,7 @@ func (n *NSQD) lookupLoop() {
 		}
 
 		select {
-		case <-ticker: //发送心跳  告诉nsqlookup自己在线
+		case <-ticker: //15秒发送一次心跳包，执行一次PING操作,告诉nsqlookup自己在线
 			// send a heartbeat and read a response (read detects closed conns)
 			for _, lookupPeer := range lookupPeers {
 				n.logf(LOG_DEBUG, "LOOKUPD(%s): sending heartbeat", lookupPeer)
@@ -121,7 +121,7 @@ func (n *NSQD) lookupLoop() {
 					n.logf(LOG_ERROR, "LOOKUPD(%s): %s - %s", lookupPeer, cmd, err)
 				}
 			}
-		case val := <-n.notifyChan:
+		case val := <-n.notifyChan: // topic和channel有变化时(新增或删除)，发送REGISTER、UNREGISTER命令，执行REGISTER、UNREGISTER操作
 			var cmd *nsq.Command
 			var branch string
 
@@ -153,7 +153,7 @@ func (n *NSQD) lookupLoop() {
 					n.logf(LOG_ERROR, "LOOKUPD(%s): %s - %s", lookupPeer, cmd, err)
 				}
 			}
-		case <-n.optsNotificationChan:
+		case <-n.optsNotificationChan: // 添加或减少nsqlookupd服务
 			var tmpPeers []*lookupPeer
 			var tmpAddrs []string
 			for _, lp := range lookupPeers {
@@ -168,7 +168,7 @@ func (n *NSQD) lookupLoop() {
 			lookupPeers = tmpPeers
 			lookupAddrs = tmpAddrs
 			connect = true
-		case <-n.exitChan:
+		case <-n.exitChan: // 退出
 			goto exit
 		}
 	}
@@ -185,7 +185,7 @@ func in(s string, lst []string) bool {
 	}
 	return false
 }
-
+// nsqlookupd服务的HTTP地址
 func (n *NSQD) lookupdHTTPAddrs() []string {
 	var lookupHTTPAddrs []string
 	lookupPeers := n.lookupPeers.Load()

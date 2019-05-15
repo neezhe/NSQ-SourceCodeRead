@@ -13,7 +13,9 @@ import (
 	"github.com/nsqio/nsq/internal/quantile"
 	"github.com/nsqio/nsq/internal/util"
 )
-
+//所有topic列表会存储在NSQD.topicMap[]里面
+//总结一下就是nsq的topic主要记录有哪些channel，以及内存管道memoryMsgChan和持久化存储BackendQueue，
+//每一个topic后面会有一个消息协程负责处理这个topic的事务。
 type Topic struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
 	messageCount uint64
@@ -22,18 +24,19 @@ type Topic struct {
 	sync.RWMutex
 
 	name              string
-	channelMap        map[string]*Channel
-	backend           BackendQueue
-	memoryMsgChan     chan *Message
+	channelMap        map[string]*Channel //最主要的变量在于channelMap，这是这个topic的所有channel结构。
+	backend           BackendQueue //backend是对应的持久化磁盘存储的管道。
+	memoryMsgChan     chan *Message //memoryMsgChan 是这个topic对应的内存管道
 	startChan         chan int
 	exitChan          chan int
 	channelUpdateChan chan int
 	waitGroup         util.WaitGroupWrapper
-	exitFlag          int32
+	exitFlag          int32  //这个标志是在删除一个topic时，先设置这个，然后在进行真实删除的。PutMessage的时候也会检查这状态，如果正在进行topic删除，那直接返回不入队
 	idFactory         *guidFactory
 
-	ephemeral      bool
-	deleteCallback func(*Topic)
+	ephemeral      bool //临时topic以#开头，这样的topic不会写到磁盘上，并且放入内存队列后会丢掉，最后一个channel删除后也会删除这个topic，没有持久化
+
+	deleteCallback func(*Topic) //topic删除函数，其实是DeleteExistingTopic, 只有在DeleteExistingChannel里面，topic是ephemeral且最后一个channel也删除后会调用
 	deleter        sync.Once
 
 	paused    int32
@@ -44,7 +47,7 @@ type Topic struct {
 
 // Topic constructor
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
-	t := &Topic{
+	t := &Topic{  //初始化一个topic结构，并且设置其backend持久化结构，然后开启消息监听协程messagePump, 通知lookupd
 		name:              topicName,
 		channelMap:        make(map[string]*Channel),
 		memoryMsgChan:     make(chan *Message, ctx.nsqd.getOpts().MemQueueSize),
@@ -54,18 +57,20 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		ctx:               ctx,
 		paused:            0,
 		pauseChan:         make(chan int),
-		deleteCallback:    deleteCallback,
+		deleteCallback:    deleteCallback, //topic删除函数，其实是DeleteExistingTopic
 		idFactory:         NewGUIDFactory(ctx.nsqd.getOpts().ID),
 	}
 
-	if strings.HasSuffix(topicName, "#ephemeral") {
+	if strings.HasSuffix(topicName, "#ephemeral") { //临时topic以#ephemeral开头，没有持久化机制，只放入内存中，所以其backend其实是个黑洞，直接丢掉
 		t.ephemeral = true
 		t.backend = newDummyBackendQueue()
 	} else {
+		//正常的topic，需要设置其log函数，以及最重要的，backend持久化机制
 		dqLogf := func(level diskqueue.LogLevel, f string, args ...interface{}) {
 			opts := ctx.nsqd.getOpts()
 			lg.Logf(opts.Logger, opts.LogLevel, lg.LogLevel(level), f, args...)
 		}
+		//下面初始化一下持久化的diskqueue数据结构, 传入路径和文件大小相关的参数，以及sync刷磁盘的配置
 		t.backend = diskqueue.New(
 			topicName,
 			ctx.nsqd.getOpts().DataPath,
@@ -78,9 +83,9 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		)
 	}
 
-	t.waitGroup.Wrap(t.messagePump)
+	t.waitGroup.Wrap(t.messagePump) //异步开启消息循环，这是最重要的异步，开启了一个新的协程处理
 
-	t.ctx.nsqd.Notify(t)
+	t.ctx.nsqd.Notify(t) //通知lookupd有新的topic产生了
 
 	return t
 }
@@ -172,14 +177,18 @@ func (t *Topic) DeleteExistingChannel(channelName string) error {
 
 	return nil
 }
-
+//消息的发送操作是二进制的PUB或者“/pub?topic=testtopic” 接口，后面其实都是调用的(t *Topic) PutMessage函数去真正发送一条消息到一个topic。
 // PutMessage writes a Message to the queue
 func (t *Topic) PutMessage(m *Message) error {
 	t.RLock()
 	defer t.RUnlock()
+	//简单看一下是不是我们正在退出状态，如果是就直接返回
 	if atomic.LoadInt32(&t.exitFlag) == 1 {
 		return errors.New("exiting")
 	}
+	//真正的发送消息函数是put, 我们知道topic存储目标有2个，一个原生内存管道memoryMsgChan，另外一个是持久化存储backend。怎么判别呢？
+	// 答案就是先看memoryMsgChan是否已经满了，如果满了就不能继续塞了，那就存到后端持久化存储里面去。
+	//memoryMsgChan的容量由 getOpts().MemQueueSize设置，在上面的 NewTopic 函数里面进行初始化，之后不能修改了。
 	err := t.put(m)
 	if err != nil {
 		return err
@@ -216,8 +225,8 @@ func (t *Topic) PutMessages(msgs []*Message) error {
 
 func (t *Topic) put(m *Message) error {
 	select {
-	case t.memoryMsgChan <- m:
-	default:
+	case t.memoryMsgChan <- m: //将这条消息直接塞入内存管道
+	default: //如果内存消息管道满了(memoryMsgChan的容量由 getOpts().MemQueueSize设置)，那么就放入到后面的持久化存储里面
 		b := bufferPoolGet()
 		err := writeMessageToBackend(b, m, t.backend)
 		bufferPoolPut(b)
@@ -346,6 +355,10 @@ func (t *Topic) Close() error {
 }
 
 func (t *Topic) exit(deleted bool) error {
+	//消息的删除函数，大概做的事情为：1.通知lookupd； 2.关闭topic.exitChan管道让topic.messagePump退出；
+	// 3.循环删除其channelMap列表； 4.将内存未消费的消息持久化；
+	//先判断一下状态看能否继续删除
+
 	if !atomic.CompareAndSwapInt32(&t.exitFlag, 0, 1) {
 		return errors.New("exiting")
 	}
@@ -355,16 +368,17 @@ func (t *Topic) exit(deleted bool) error {
 
 		// since we are explicitly deleting a topic (not just at system exit time)
 		// de-register this from the lookupd
-		t.ctx.nsqd.Notify(t)
+		t.ctx.nsqd.Notify(t) //通知lookupLoop协程进行处理，有增删topic了，需要进行UnRegister 后者 Register topic了
 	} else {
 		t.ctx.nsqd.logf(LOG_INFO, "TOPIC(%s): closing", t.name)
 	}
-
+	//关闭管道，这样其他在这个topic上的协程就会退出, 比如topic.messagePump 就会退出topic消息循环
 	close(t.exitChan)
-
+	//下面其实是在等待启动消息循环的代码退出： t.waitGroup.Wrap(func() { t.messagePump() }), 这样不会再有在这个topic上的操作了
 	// synchronize the close of messagePump()
 	t.waitGroup.Wait()
-
+//Wait等待协程退出后，就开始清理channel等信息了。接下来准备清空对应channel的数据 ,
+// 看是否是要删除topic来决定调用delete还是close, 这个处理类似topic的处理
 	if deleted {
 		t.Lock()
 		for _, channel := range t.channelMap {
@@ -375,6 +389,7 @@ func (t *Topic) exit(deleted bool) error {
 
 		// empty the queue (deletes the backend files, too)
 		t.Empty()
+		//然后在通知后面的disqqueue进行清理删除
 		return t.backend.Delete()
 	}
 
@@ -388,6 +403,7 @@ func (t *Topic) exit(deleted bool) error {
 	}
 
 	// write anything leftover to disk
+	//如果还有内存消息没处理完需要写入后端的持久化设备
 	t.flush()
 	return t.backend.Close()
 }

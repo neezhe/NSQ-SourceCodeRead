@@ -68,7 +68,7 @@ func (p *program) Start() error {
 	}
 	p.nsqd = nsqd   //start返回后会进入到svc的代码里面进行等待，监听信号量如果用户杀进程，就调用下面的stop
 
-	err = p.nsqd.LoadMetadata()//加载topics数据,初始化n.topics结构
+	err = p.nsqd.LoadMetadata()//加载磁盘文件nsqd.data时，会先创建所有之前的topic,初始化n.topics结构
 	if err != nil {
 		logFatal("failed to load metadata - %s", err)
 	}

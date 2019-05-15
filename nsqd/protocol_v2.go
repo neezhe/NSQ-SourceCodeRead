@@ -32,7 +32,7 @@ var okBytes = []byte("OK")
 type protocolV2 struct {
 	ctx *context
 }
-
+//V2协议大致为“  V2 command params\n”或“  V2 command params\r\n”
 func (p *protocolV2) IOLoop(conn net.Conn) error {
 	var err error
 	var line []byte

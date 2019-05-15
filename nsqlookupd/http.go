@@ -105,6 +105,7 @@ func (s *httpServer) doChannels(w http.ResponseWriter, req *http.Request, ps htt
 	}, nil
 }
 //获取指定topic下的所有有效producer
+//当消费者需要查询某个topic在哪些nsqd上时，可以发送/lookup 的http命令查询，nsqlookupd的查询topic信息的接口是这样的：curl 'http://127.0.0.1:4161/lookup?topic=testtopic'
 func (s *httpServer) doLookup(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
 	if err != nil {
@@ -115,15 +116,15 @@ func (s *httpServer) doLookup(w http.ResponseWriter, req *http.Request, ps httpr
 	if err != nil {
 		return nil, http_api.Err{400, "MISSING_ARG_TOPIC"}
 	}
-
+	//先查询map里面是否有对应topic的记录
 	registration := s.ctx.nsqlookupd.DB.FindRegistrations("topic", topicName, "")
 	if len(registration) == 0 {//topic不存在
 		return nil, http_api.Err{404, "TOPIC_NOT_FOUND"}
 	}
-
+	//得到所有的channel列表
 	channels := s.ctx.nsqlookupd.DB.FindRegistrations("channel", topicName, "*").SubKeys()
+	//得到 有这个topic的nsqd列表，后面需要去掉不活跃的机器
 	producers := s.ctx.nsqlookupd.DB.FindProducers("topic", topicName, "")
-	//过滤出有效producer和nsqlookupd/options.go中的一些默认配置值
 	producers = producers.FilterByActive(s.ctx.nsqlookupd.opts.InactiveProducerTimeout,
 		s.ctx.nsqlookupd.opts.TombstoneLifetime)
 	return map[string]interface{}{
@@ -131,8 +132,9 @@ func (s *httpServer) doLookup(w http.ResponseWriter, req *http.Request, ps httpr
 		"producers": producers.PeerInfo(),
 	}, nil
 }
-
+//在lookupd上增加了一条topic的记录，并且他的producers为空
 func (s *httpServer) doCreateTopic(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
+	//创建一个topic， 只是简单的记录了一下topic信息，并且加到DB里面，对应的nsqd数组为空
 	reqParams, err := http_api.NewReqParams(req)
 	if err != nil {
 		return nil, http_api.Err{400, "INVALID_REQUEST"}

@@ -74,7 +74,10 @@ func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 		}
 	}
 }
-
+//1.连接nsqlookupd服务，执行IDENTIFY操作；
+//2.将nsqd的Metadata中的topic、channel注册到nsqlookupd服务;
+//3.15秒心跳一次，对nsqlookupd执行一次PING操作
+//4.新增或删除topic、channel时，REGISTER或UNREGISTER到nsqlookupd服务。
 func (n *NSQD) lookupLoop() {
 	var lookupPeers []*lookupPeer
 	var lookupAddrs []string
@@ -90,17 +93,19 @@ func (n *NSQD) lookupLoop() {
 	ticker := time.Tick(15 * time.Second)
 	for {
 		if connect {
-			for _, host := range n.getOpts().NSQLookupdTCPAddresses {
-				if in(host, lookupAddrs) {
+			for _, host := range n.getOpts().NSQLookupdTCPAddresses {// 配置文件中或启动命令中指定的nsqlookupd服务的地址
+				if in(host, lookupAddrs) {// 如果已经连接过了，跳过
 					continue
 				}
 				n.logf(LOG_INFO, "LOOKUP(%s): adding peer", host)
 				lookupPeer := newLookupPeer(host, n.getOpts().MaxBodySize, n.logf,
 					connectCallback(n, hostname))
+				// 开始链接lookupd服务
 				lookupPeer.Command(nil) // start the connection
 				lookupPeers = append(lookupPeers, lookupPeer)
 				lookupAddrs = append(lookupAddrs, host)
 			}
+			// 赋值给n.lookupPeers
 			n.lookupPeers.Store(lookupPeers)
 			connect = false
 		}

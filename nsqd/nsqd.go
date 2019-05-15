@@ -79,9 +79,9 @@ type NSQD struct {
 func New(opts *Options) (*NSQD, error) {
 	var err error
 
-	dataPath := opts.DataPath
+	dataPath := opts.DataPath //数据保存地址
 	if opts.DataPath == "" {
-		cwd, _ := os.Getwd()
+		cwd, _ := os.Getwd()//获取当前目录，类似Linux的pwd命令
 		dataPath = cwd
 	}
 	if opts.Logger == nil {
@@ -101,10 +101,10 @@ func New(opts *Options) (*NSQD, error) {
 	n.ci = clusterinfo.New(n.logf, httpcli)
 
 	n.lookupPeers.Store([]*lookupPeer{})
-
+	//原子操作
 	n.swapOpts(opts)
 	n.errValue.Store(errStore{})
-
+	//目录写锁
 	err = n.dl.Lock()
 	if err != nil {
 		return nil, fmt.Errorf("--data-path=%s in use (possibly by another instance of nsqd)", dataPath)
@@ -257,22 +257,22 @@ func (n *NSQD) Main() error {
 
 	tcpServer := &tcpServer{ctx: ctx}
 	n.waitGroup.Wrap(func() {
-		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf))
+		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf))  //tcp服务，tcp的处理函数和nsqlookupd中的不一样。
 	})
 	httpServer := newHTTPServer(ctx, false, n.getOpts().TLSRequired == TLSRequired)
 	n.waitGroup.Wrap(func() {
-		exitFunc(http_api.Serve(n.httpListener, httpServer, "HTTP", n.logf))
+		exitFunc(http_api.Serve(n.httpListener, httpServer, "HTTP", n.logf)) //http服务
 	})
 	if n.tlsConfig != nil && n.getOpts().HTTPSAddress != "" {
 		httpsServer := newHTTPServer(ctx, true, true)
 		n.waitGroup.Wrap(func() {
-			exitFunc(http_api.Serve(n.httpsListener, httpsServer, "HTTPS", n.logf))
+			exitFunc(http_api.Serve(n.httpsListener, httpsServer, "HTTPS", n.logf)) //https服务
 		})
 	}
 
-	n.waitGroup.Wrap(n.queueScanLoop) //循环处理消息的分发
-	n.waitGroup.Wrap(n.lookupLoop) //该循环是一个死循环，其中有一项功能就是发送心跳值，告诉所有的nsqlookupd，自己还活着。
-	if n.getOpts().StatsdAddress != "" {
+	n.waitGroup.Wrap(n.queueScanLoop) //队列scan扫描协程
+	n.waitGroup.Wrap(n.lookupLoop) //处理与nsqlookupd进程的交互。
+	if n.getOpts().StatsdAddress != "" {  //如果配置了状态地址，开启状态协程
 		n.waitGroup.Wrap(n.statsdLoop)
 	}
 
@@ -319,14 +319,19 @@ func writeSyncFile(fn string, data []byte) error {
 	return err
 }
 
+//读取当前的nsqd.dat文件内容，nsq对于配置文件的写入，都是用先写临时文件然后进行rename，保存了两份，为了方便回滚时用，
+// 所以在配置加载的时候也需要读取2个文件，按进行比较， 看newMetadataFile和oldMetadataFile是否一样，
+// 如果不一样就报错。 随后json.Unmarshal(data, &m) 格式化json文件内容，循环Topics然后递归扫描其Channels列表。
+//在扫描topic和channel的时候，分别会调用 GetTopic， GetChannel， 其实这两个函数如果在判断topic不存在的时候，会创建他，并且跟lookupd进行联系.
 func (n *NSQD) LoadMetadata() error {
+	//标识元数据已加载
 	atomic.StoreInt32(&n.isLoading, 1)
 	defer atomic.StoreInt32(&n.isLoading, 0)
-
+	//元数据文件名称，这里有两个文件，其实没有，其中老的一个文件使用当前nsqd的ID命名，作备份用的，方便回滚
 	fn := newMetadataFile(n.getOpts())
 
-	data, err := readOrEmpty(fn)
-	if err != nil {
+	data, err := readOrEmpty(fn)//读取元数据文件
+	if err != nil { //数据都为空，程序重新开始
 		return err
 	}
 	if data == nil {
@@ -340,12 +345,12 @@ func (n *NSQD) LoadMetadata() error {
 	}
 
 	for _, t := range m.Topics {
-		if !protocol.IsValidTopicName(t.Name) {
+		if !protocol.IsValidTopicName(t.Name) { //验证topic名称是否有效
 			n.logf(LOG_WARN, "skipping creation of invalid topic %s", t.Name)
 			continue
 		}
-		topic := n.GetTopic(t.Name)
-		if t.Paused {
+		topic := n.GetTopic(t.Name)//获取指向该topic对象的指针(nsqd/topic.go中Topic struct)
+		if t.Paused {//topic暂停使用，标注到topic对象中
 			topic.Pause()
 		}
 		for _, c := range t.Channels {
@@ -363,6 +368,9 @@ func (n *NSQD) LoadMetadata() error {
 	return nil
 }
 
+//持久化当前的topic,channel数据结构，不涉及到数据不封顶持久化. 写入临时文件后改名， 最后的文件就是nsqd.data。
+// 文件比较长，主要是为了保证操作安全，做尽量保证原值操作的，函数会写了2次文件，第一次是json 数据文件，写好后重命名。
+// 先写入临时文件，然后做一次重命名（os.Rename），这样避免中间出问题只写了一部分数据，rename是原子操作,所以安全，避免不一致性的发生。
 func (n *NSQD) PersistMetadata() error {
 	// persist metadata about what topics/channels we have, across restarts
 	fileName := newMetadataFile(n.getOpts())
@@ -372,7 +380,7 @@ func (n *NSQD) PersistMetadata() error {
 	js := make(map[string]interface{})
 	topics := []interface{}{}
 	for _, topic := range n.topicMap {
-		if topic.ephemeral {
+		if topic.ephemeral {//如果是临时的，忽略
 			continue
 		}
 		topicData := make(map[string]interface{})
@@ -406,11 +414,11 @@ func (n *NSQD) PersistMetadata() error {
 
 	tmpFileName := fmt.Sprintf("%s.%d.tmp", fileName, rand.Int())
 
-	err = writeSyncFile(tmpFileName, data)
+	err = writeSyncFile(tmpFileName, data)//写入临时文件
 	if err != nil {
 		return err
 	}
-	err = os.Rename(tmpFileName, fileName)
+	err = os.Rename(tmpFileName, fileName)//文件重命名，如果fileName已存在，自动替换掉
 	if err != nil {
 		return err
 	}
@@ -433,12 +441,12 @@ func (n *NSQD) Exit() {
 	}
 
 	n.Lock()
-	err := n.PersistMetadata()
+	err := n.PersistMetadata()//将元数据写入本地磁盘
 	if err != nil {
 		n.logf(LOG_ERROR, "failed to persist metadata - %s", err)
 	}
 	n.logf(LOG_INFO, "NSQ: closing topics")
-	for _, topic := range n.topicMap {
+	for _, topic := range n.topicMap {//关闭topics
 		topic.Close()
 	}
 	n.Unlock()

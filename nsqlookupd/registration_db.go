@@ -83,7 +83,7 @@ func (r *RegistrationDB) AddRegistration(k Registration) {
 }
 
 // add a producer to a registration
-//添加producer到指定的registration里
+//就是对registrationMap 的查询，如果当前这个客户端以及在映射表里面就不需要处理，否则就加进去。
 func (r *RegistrationDB) AddProducer(k Registration, p *Producer) bool {
 	r.Lock()
 	defer r.Unlock()

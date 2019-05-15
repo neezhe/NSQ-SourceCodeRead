@@ -93,6 +93,7 @@ func (p *LookupProtocolV1) Exec(client *ClientV1, reader *bufio.Reader, params [
 		return p.PING(client, params)
 	case "IDENTIFY": //当nsqd第一次连接nsqlookupd时，发送IDENTITY，验证自己身份；
 		return p.IDENTIFY(client, reader, params[1:])
+	//nsqd是怎么告诉nsqlookupd,他有个新的topic创建的呢？ 这就得看 REGISTER操作了。
 	case "REGISTER": //当nsqd创建一个topic或者channel时，向nsqlookupd发送REGISTER请求，在nsqlookupd上更新当前nsqd的topic或者channel信息；
 		return p.REGISTER(client, reader, params[1:])
 	case "UNREGISTER"://当nsqd删除一个topic或者channel时，向nsqlookupd发送UNREGISTER请求，在nsqlookupd上更新当前nsqd的topic或者channel信息；
@@ -129,20 +130,23 @@ func (p *LookupProtocolV1) REGISTER(client *ClientV1, reader *bufio.Reader, para
 	if client.peerInfo == nil {//必须先执行IDENTIFY操作
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "client must IDENTIFY")
 	}
-	//获取topic名称和channel名称
-	//猜测REGISTER时，client发送的消息为 "REGISTER topicName channelName"
+	//nsqd新建了topic/channel后会发过来,此处读取nsqd发送过来的topic和channel,以备用来查询，
+	// 然后根据是否有channel来进行对应的处理：如果有channel，就需要记录(topic,channel)对，否则只需要记录topic就行了，这里数据结构是共用的.
 	topic, channel, err := getTopicChan("REGISTER", params)
 	if err != nil {
 		return nil, err
 	}
 	//注册信息到RegistrationDB
+	//如果有channel，需要单独记录一下channel，因为topic和channel可以1:n的
 	if channel != "" {
 		key := Registration{"channel", topic, channel}
+		//调用AddProducer 将映射关系放入map里面
 		if p.ctx.nsqlookupd.DB.AddProducer(key, &Producer{peerInfo: client.peerInfo}) {
 			p.ctx.nsqlookupd.logf(LOG_INFO, "DB: client(%s) REGISTER category:%s key:%s subkey:%s",
 				client, "channel", topic, channel)
 		}
 	}
+	//注册topic到RegistrationDB
 	key := Registration{"topic", topic, ""}
 	if p.ctx.nsqlookupd.DB.AddProducer(key, &Producer{peerInfo: client.peerInfo}) {
 		p.ctx.nsqlookupd.logf(LOG_INFO, "DB: client(%s) REGISTER category:%s key:%s subkey:%s",

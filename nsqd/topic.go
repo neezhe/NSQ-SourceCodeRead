@@ -251,6 +251,7 @@ func (t *Topic) Depth() int64 {
 
 // messagePump selects over the in-memory and backend queue and
 // writes messages to every channel for this topic
+//主要就是订阅了内存和磁盘队列消息，这样在“topic.PutMessage 到 topic.memoryMsgChan”之后，下面的select就会检测到有消息到来
 func (t *Topic) messagePump() {
 	var msg *Message
 	var buf []byte
@@ -285,7 +286,7 @@ func (t *Topic) messagePump() {
 	// main message loop
 	for {
 		select {
-		case msg = <-memoryMsgChan:
+		case msg = <-memoryMsgChan: //内存队列
 		case buf = <-backendChan:
 			msg, err = decodeMessage(buf)
 			if err != nil {
@@ -320,7 +321,8 @@ func (t *Topic) messagePump() {
 			goto exit
 		}
 
-		for i, channel := range chans {
+		for i, channel := range chans { //遍历每个channel,然后将消息一个个发送到channel的流程里面
+			//到这里只有一种可能，有新消息来了, 那么遍历channel，调用PutMessage发送消息
 			chanMsg := msg
 			// copy the message because each channel
 			// needs a unique instance but...
@@ -331,11 +333,11 @@ func (t *Topic) messagePump() {
 				chanMsg.Timestamp = msg.Timestamp
 				chanMsg.deferred = msg.deferred
 			}
-			if chanMsg.deferred != 0 {
+			if chanMsg.deferred != 0 { //如果是defered延迟投递的消息，那么放入特殊的队列
 				channel.PutMessageDeferred(chanMsg, chanMsg.deferred)
 				continue
 			}
-			err := channel.PutMessage(chanMsg)
+			err := channel.PutMessage(chanMsg) //立即投递到channel里面
 			if err != nil {
 				t.ctx.nsqd.logf(LOG_ERROR,
 					"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",

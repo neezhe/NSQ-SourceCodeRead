@@ -309,6 +309,14 @@ func (c *Channel) PutMessage(m *Message) error {
 	atomic.AddUint64(&c.messageCount, 1)
 	return nil
 }
+//channel发送消息也很简单
+//channel的putmessage，还是老办法，将消息放入channel.memoryMsgChan里面，
+//或者放到后台持久化里面，如果客户端来不及接受的话, 那就存入文件
+//这里客户端是如何接收到消息的呢？可以看SUB命令了.
+//sub命令最后会调用到client.SubEventChan &lt;- channel, 也就是说，会在这个客户端对应的消息循环里面记录这个channel.memoryMsgChan
+//并且监听他，任何客户端SUB到某个channel后，其消息循环便会订阅到对应这个channel的memoryMsgChan上面，
+//所以同一个channel，客户端随机有一个能收到消息. 这里我们知道，channel的消息发送也是通过管道，
+//而管道的另一端，则是所有订阅到这上面的client的消息处理协程
 
 func (c *Channel) put(m *Message) error {
 	select {
@@ -359,6 +367,7 @@ func (c *Channel) TouchMessage(clientID int64, id MessageID, clientMsgTimeout ti
 
 // FinishMessage successfully discards an in-flight message
 func (c *Channel) FinishMessage(clientID int64, id MessageID) error {
+	//收到FIN命令结束倒计时，完美投递
 	msg, err := c.popInFlightMessage(clientID, id)
 	if err != nil {
 		return err

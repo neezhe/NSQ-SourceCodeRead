@@ -39,7 +39,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 	var zeroTime time.Time
 
 	clientID := atomic.AddInt64(&p.ctx.nsqd.clientIDSequence, 1)
-	client := newClientV2(clientID, conn, p.ctx)
+	client := newClientV2(clientID, conn, p.ctx)  //创建client结构
 	p.ctx.nsqd.AddClient(client.ID, client)
 
 	// synchronize the startup of messagePump in order
@@ -47,10 +47,12 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 	// goroutine local state derived from client attributes
 	// and avoid a potential race with IDENTIFY (where a client
 	// could have changed or disabled said attributes)
+	//上面注释说了，这里做同步的原因在于，需要确保messagePump里面的初始化完成，再进行下面的操作，
+	//因为当前客户端在后面可能修改相关的数据。消息的订阅发布工作在辅助的messagePump携程处理，下面创建
 	messagePumpStartedChan := make(chan bool)
 	go p.messagePump(client, messagePumpStartedChan)
 	<-messagePumpStartedChan
-
+	//开始循环读取客户端请求然后解析参数，进行处理, 这个工作在客户端的主协程处理
 	for {
 		if client.HeartbeatInterval > 0 {
 			client.SetReadDeadline(time.Now().Add(client.HeartbeatInterval * 2))
@@ -81,7 +83,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 		p.ctx.nsqd.logf(LOG_DEBUG, "PROTOCOL(V2): [%s] %s", client, params)
 
 		var response []byte
-		response, err = p.Exec(client, params)
+		response, err = p.Exec(client, params) //执行这条命令
 		if err != nil {
 			ctx := ""
 			if parentErr := err.(protocol.ChildErr).Parent(); parentErr != nil {
@@ -173,7 +175,7 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, err
 	}
 	switch {
-	case bytes.Equal(params[0], []byte("FIN")):
+	case bytes.Equal(params[0], []byte("FIN")): //消费者收到msgid后，发送FIN+msgid通知服务器成功投递消息，可以清空消息了
 		return p.FIN(client, params)
 	case bytes.Equal(params[0], []byte("RDY")):
 		return p.RDY(client, params)
@@ -210,7 +212,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 	var flusherChan <-chan time.Time
 	var sampleRate int32
 
-	subEventChan := client.SubEventChan
+	subEventChan := client.SubEventChan//subEventChan 是客户端有订阅行为的通知channel，订阅一次后会重置为null。
 	identifyEventChan := client.IdentifyEventChan
 	outputBufferTicker := time.NewTicker(client.OutputBufferTimeout)
 	heartbeatTicker := time.NewTicker(client.HeartbeatInterval)
@@ -271,6 +273,9 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 			flushed = true
 		case <-client.ReadyStateChan:
 		case subChannel = <-subEventChan:
+			//当客户端发送了SUB操作后，会通过这个管道，塞入我所应该订阅的topic，然后这里就得到了对应应该订阅的channel，
+			//然后就在上面的循环中设置对应的memoryMsgChan 或者backend.ReadChan() 进行监听
+			//所以nsq是通过前台跟客户端交互协程通知后台消息循环协程，你需要订阅一个新的channel并且关注其事件。 这么来订阅的
 			// you can't SUB anymore
 			subEventChan = nil
 		case identifyData := <-identifyEventChan:
@@ -299,6 +304,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 			if err != nil {
 				goto exit
 			}
+			//开始订阅管道subChannel.memoryMsgChan/backend， 每个客户端都可以订阅到channel的内存或者磁盘队列里面;
 		case b := <-backendMsgChan:
 			if sampleRate > 0 && rand.Int31n(100) > sampleRate {
 				continue
@@ -310,10 +316,10 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 				continue
 			}
 			msg.Attempts++
-
-			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout)
+			//inflight功能用来保证消息的一次到达，所有发送给客户端，但是没收到FIN确认的消息都放到这里面：
+			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout)//监听这个channel的请求，如果有消息到来，被触发后发送给客户端
 			client.SendingMessage()
-			err = p.SendMessage(client, msg)
+			err = p.SendMessage(client, msg)//这个很简单，go语言对于网络请求包装的非常像同步读写，比C简单太多了，不需要处理任何内存结构，buffer组织等，方便到不行：
 			if err != nil {
 				goto exit
 			}
@@ -324,7 +330,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 			}
 			msg.Attempts++
 
-			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout)
+			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout) //监听这个channel的请求，如果有消息到来，被触发后发送给客户端
 			client.SendingMessage()
 			err = p.SendMessage(client, msg)
 			if err != nil {
@@ -578,7 +584,8 @@ func (p *protocolV2) CheckAuth(client *clientV2, cmd, topicName, channelName str
 	}
 	return nil
 }
-
+//消费者使用TCP协议，发送SUB topic channel 命令订阅到某个channel上，记录其client.Channel = channel，通知c.SubEventChan
+//记录一下订阅的topic信息，以及通知后台协程去实际订阅管道
 func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	if atomic.LoadInt32(&client.State) != stateInit {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot SUB in current state")
@@ -613,6 +620,7 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	// Avoid adding a client to an ephemeral channel / topic which has started exiting.
 	var channel *Channel
 	for {
+		//获取topic和channel，将本客户的加入其client队列
 		topic := p.ctx.nsqd.GetTopic(topicName)
 		channel = topic.GetChannel(channelName)
 		if err := channel.AddClient(client.ID, client); err != nil {
@@ -629,8 +637,11 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 		break
 	}
 	atomic.StoreInt32(&client.State, stateSubscribed)
+	//下面这行很重要，设置本client说订阅的channel，这样接下来的SubEventChan就会由当前clienid开启的后台协程来订阅这个channel的消息,
+	//而这个channel，就是topic-channel结构，里面能找到对应channel的订阅管道
 	client.Channel = channel
 	// update message pump
+	//通知后台订阅协程来订阅消息,包括内存管道和磁盘
 	client.SubEventChan <- channel
 
 	return okBytes, nil
@@ -687,7 +698,9 @@ func (p *protocolV2) FIN(client *clientV2, params [][]byte) ([]byte, error) {
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", err.Error())
 	}
-
+	//客户端发送FIN 某条消息来FinishMessage结束消息倒计时，成功投递
+	//结束消息倒计时，投递完成
+	//FinishMessage 函数就是删除设置的inflight倒计时队列
 	err = client.Channel.FinishMessage(client.ID, *id)
 	if err != nil {
 		return nil, protocol.NewClientErr(err, "E_FIN_FAILED",
@@ -797,10 +810,10 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 	if err := p.CheckAuth(client, "PUB", topicName, ""); err != nil {
 		return nil, err
 	}
-
+	//get一下topic，如果没有会自动创建，并且开启topic的消息循环，开始从lookupd同步消息
 	topic := p.ctx.nsqd.GetTopic(topicName)
 	msg := NewMessage(topic.GenerateID(), messageBody)
-	err = topic.PutMessage(msg)
+	err = topic.PutMessage(msg) //实际上就是topic.put,将消息放入t.memoryMsgChan或者磁盘后就返回了。客户端流程结束.
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_PUB_FAILED", "PUB failed "+err.Error())
 	}

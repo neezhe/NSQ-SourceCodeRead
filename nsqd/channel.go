@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nsqio/go-diskqueue"
 	"github.com/nsqio/nsq/internal/lg"
 	"github.com/nsqio/nsq/internal/pqueue"
 	"github.com/nsqio/nsq/internal/quantile"
+	"github.com/nsqio/go-diskqueue"
 )
 
 type Consumer interface {
@@ -33,7 +33,13 @@ type Consumer interface {
 //
 // Channels maintain all client and message metadata, orchestrating in-flight
 // messages, timeouts, requeuing, etc.
-type Channel struct {
+//channel的代码相对简单。
+//channel最重要的几个结构应该是跟延迟投递消息，以及可靠性保证的消息的相关数据结构。两者基本类似，都是用优先级队列实现的。
+// nsq支持塞入队列的时候指定生效时间，支持超时到多久之后生效。
+type Channel struct { //nsqd的channel是最接近消费者端的，有他特有的东西，包括投递，确认等；
+//作用在于能对指定的队列topic，进行多份投递，或者说消费，一份队列可以给多个消费者重复消费，
+// 有点类似于kafka的consumer_group，每个consumer_group拥有独立的position， 不同group之间可以消费同一份内容的多个副本。
+	//kafka的已经消费国的消息是可以继续保留的，而nsq则如果消费完了，就会删除掉
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
 	requeueCount uint64
 	messageCount uint64
@@ -45,26 +51,30 @@ type Channel struct {
 	name      string
 	ctx       *context
 
-	backend BackendQueue
+	backend BackendQueue //磁盘持久化存储
 
-	memoryMsgChan chan *Message
+	memoryMsgChan chan *Message//channel的消息管道，topic发送消息会放入这里面，所有SUB的客户端会用后台协程订阅到这个管道后面, 1:n
+
 	exitFlag      int32
 	exitMutex     sync.RWMutex
 
 	// state tracking
-	clients        map[int64]Consumer
+	clients        map[int64]Consumer //所有订阅的topic都会记录到这里, 用来在关闭的时候清理client，以及根据clientid找client
 	paused         int32
 	ephemeral      bool
-	deleteCallback func(*Channel)
+	deleteCallback func(*Channel)//实际上就是DeleteExistingChannel
 	deleter        sync.Once
 
 	// Stats tracking
 	e2eProcessingLatencyStream *quantile.Quantile
 
 	// TODO: these can be DRYd up
+	//延迟投递消息，消息体会放入deferredPQ，并且由后台的queueScanLoop协程来扫描消息，将过期的消息照常使用c.put(msg)发送出去
 	deferredMessages map[MessageID]*pqueue.Item
-	deferredPQ       pqueue.PriorityQueue
+	deferredPQ       pqueue.PriorityQueue //延迟投递消息的优先级队列
 	deferredMutex    sync.Mutex
+	//正在发送中的消息记录，直到收到客户端的FIN才会删除，否则timeout到来会重传消息的.
+	//这里应用层有个坑，如果程序处理延迟了，那么可能重复投递，那怎么办,应用层得注意这个，设置了timeout就得接受有重传的存在
 	inFlightMessages map[MessageID]*Message
 	inFlightPQ       inFlightPqueue
 	inFlightMutex    sync.Mutex
@@ -285,13 +295,14 @@ func (c *Channel) IsPaused() bool {
 }
 
 // PutMessage writes a Message to the queue
+//发送消息给后面的消费者
 func (c *Channel) PutMessage(m *Message) error {
 	c.RLock()
 	defer c.RUnlock()
 	if c.Exiting() {
 		return errors.New("exiting")
 	}
-	err := c.put(m)
+	err := c.put(m) //将消息放入channel.memoryMsgChan里面，或者放到后台持久化里面，如果客户端来不及接受的话, 那就存入文件。
 	if err != nil {
 		return err
 	}
@@ -304,7 +315,7 @@ func (c *Channel) put(m *Message) error {
 	case c.memoryMsgChan <- m:
 	default:
 		b := bufferPoolGet()
-		err := writeMessageToBackend(b, m, c.backend)
+		err := writeMessageToBackend(b, m, c.backend) //Backend就是消费者的意思
 		bufferPoolPut(b)
 		c.ctx.nsqd.SetHealth(err)
 		if err != nil {
@@ -315,8 +326,9 @@ func (c *Channel) put(m *Message) error {
 	}
 	return nil
 }
-
+//延迟投递消息
 func (c *Channel) PutMessageDeferred(msg *Message, timeout time.Duration) {
+	//延迟投递消息，也算一个messageCount。 参数timeout是延迟秒数
 	atomic.AddUint64(&c.messageCount, 1)
 	c.StartDeferredTimeout(msg, timeout)
 }
@@ -389,7 +401,10 @@ func (c *Channel) RequeueMessage(clientID int64, id MessageID, timeout time.Dura
 }
 
 // AddClient adds a client to the Channel's client list
+//SUB订阅消息仅限于TCP协议，客户端通过SUB命令订阅上来，最后调用cannnel.AddClient函数，
+// 函数很简单，就 在channel上记录了一下当前clientid，以备后面进行清理等使用
 func (c *Channel) AddClient(clientID int64, client Consumer) error {
+	//sub命令触发到这里，在channel上面增加一个client
 	c.Lock()
 	defer c.Unlock()
 
@@ -408,6 +423,8 @@ func (c *Channel) AddClient(clientID int64, client Consumer) error {
 }
 
 // RemoveClient removes a client from the Channel's client list
+//另外clients还有一个作用，就是如果topic属于临时队列，不需要保存历史痕迹的，
+// 如果所有消费者都已经退出后，这会删除channel，进而如果所有channel都关闭了，就会删除上层的topic
 func (c *Channel) RemoveClient(clientID int64) {
 	c.Lock()
 	defer c.Unlock()
@@ -419,12 +436,20 @@ func (c *Channel) RemoveClient(clientID int64) {
 	delete(c.clients, clientID)
 
 	if len(c.clients) == 0 && c.ephemeral == true {
+		//所有client都退出了，如果是临时的ephemeral topic，就会删除这个channel，
+		// 实际上就是DeleteExistingChannel
 		go c.deleter.Do(func() { c.deleteCallback(c) })
 	}
 }
-
+//nsqd 对于消息的确认到达，是通过消费者发送FIN+msgid来实现的，可想而知，他需要一个队列记录：当前正在发送，待确认的消息列表，类似窗口协议，性能差点可能，这就是：InFlightQueue 。
+//发送客户端消息的时候，会调用StartInFlightTimeout来记录当前的infight消息，以备进行重传。如果客户端收到消息，会发送FIN 命令来结束消息倒计时，不用重传了。简单看看StartInFlightTimeout 代码。
+//这个函数会在客户端的protocolV2) messagePump 循环体里面，当某个客户端连接得到内存或者磁盘消息后，在发送前会设置这个inflight队列，
+// 用来记录当前正在发送的消息，如果超时时间到来还没有确认收到，那么会有queueScanLoop循环去扫描，并且重发这条消息,
+// 最后会调用到processInFlightQueue
 func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout time.Duration) error {
 	now := time.Now()
+	//下面改clientID会不会有问题？不会，因为一个消息只可能给一个客户端，topic在发送消息到channel的时候
+	//第0个channel会复用当初的msg结构，之后的会创建一个新的
 	msg.clientID = clientID
 	msg.deliveryTS = now
 	msg.pri = now.Add(timeout).UnixNano()
@@ -435,10 +460,14 @@ func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout tim
 	c.addToInFlightPQ(msg)
 	return nil
 }
-
+//可以看到，对于延迟投递的消息最后就是用消息到达的时间戳来当优先级值，放入优先级队列。
+//放入到优先级队列里面. 那么这条消息怎么触发呢？ 在main函数里面，会启动queueScanLoop协程，后者会定时启动扫描任务扫描所有channels,
+// 然后去处理这个优先级队列，调用processDeferredQueue 函数，如果有到期的消息就触发他；
 func (c *Channel) StartDeferredTimeout(msg *Message, timeout time.Duration) error {
+	//延迟投递消息，计算绝对时间absTs, 然后新建一个pqueue.Item放到优先级队列里面，优先级就是absTs，按照时间顺序排列
 	absTs := time.Now().Add(timeout).UnixNano()
 	item := &pqueue.Item{Value: msg, Priority: absTs}
+	//下面就是记录一下deferredMessages[id] = item，防止重复延迟投递
 	err := c.pushDeferredMessage(item)
 	if err != nil {
 		return err
@@ -526,7 +555,7 @@ func (c *Channel) addToDeferredPQ(item *pqueue.Item) {
 	heap.Push(&c.deferredPQ, item)
 	c.deferredMutex.Unlock()
 }
-
+//主要逻辑就是从优先级队列里面循环读取已到期的消息，然后将其重新调用put函数发送出去，跟客户端PUB是一个效果：
 func (c *Channel) processDeferredQueue(t int64) bool {
 	c.exitMutex.RLock()
 	defer c.exitMutex.RUnlock()
@@ -537,7 +566,11 @@ func (c *Channel) processDeferredQueue(t int64) bool {
 
 	dirty := false
 	for {
+		//循环处理到期消息，这里如果有大量消息没有处理，就会死循环一直到处理完毕为止
+		//目测不是太好，如果业务设置某个时间到期的消息，基本上nsqd应该会卡的不行了
+		//会不断在这里处理这些消息，当然对于服务是还能响应的
 		c.deferredMutex.Lock()
+		//如果有取一条的到期消息
 		item, _ := c.deferredPQ.PeekAndShift(t)
 		c.deferredMutex.Unlock()
 
@@ -547,10 +580,12 @@ func (c *Channel) processDeferredQueue(t int64) bool {
 		dirty = true
 
 		msg := item.Value.(*Message)
+		//从c.deferredMessages 删除
 		_, err := c.popDeferredMessage(msg.ID)
 		if err != nil {
 			goto exit
 		}
+		//调用常规发送消息的put函数去照常投递消息
 		c.put(msg)
 	}
 

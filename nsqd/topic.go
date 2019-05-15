@@ -106,6 +106,7 @@ func (t *Topic) Exiting() bool {
 // to return a pointer to a Channel object (potentially new)
 // for the given Topic
 func (t *Topic) GetChannel(channelName string) *Channel {
+	//获取topic的channel，如果之前没有是新建的，则通知channelUpdateChan去刷新订阅状态
 	t.Lock()
 	channel, isNew := t.getOrCreateChannel(channelName)
 	t.Unlock()
@@ -113,7 +114,8 @@ func (t *Topic) GetChannel(channelName string) *Channel {
 	if isNew {
 		// update messagePump state
 		select {
-		case t.channelUpdateChan <- 1:
+		//通知去刷新订阅状态，如果没有channel了就不用发布了
+		case t.channelUpdateChan <- 1: //另一端是(t *Topic) messagePump
 		case <-t.exitChan:
 		}
 	}
@@ -123,12 +125,14 @@ func (t *Topic) GetChannel(channelName string) *Channel {
 
 // this expects the caller to handle locking
 func (t *Topic) getOrCreateChannel(channelName string) (*Channel, bool) {
-	channel, ok := t.channelMap[channelName]
+	channel, ok := t.channelMap[channelName] //获取一个channel，如果没有就新建它
+	//调用方已经对topic加锁了t.Lock()， 所以不需要加锁
 	if !ok {
 		deleteCallback := func(c *Channel) {
 			t.DeleteExistingChannel(c.name)
 		}
-		channel = NewChannel(t.name, channelName, t.ctx, deleteCallback)
+		//不存在，初始化一个channel，设置持久化结构等
+		channel = NewChannel(t.name, channelName, t.ctx, deleteCallback) //NewChannel新建流程比较简单，也没有topic那种创建后端异步队列的流程
 		t.channelMap[channelName] = channel
 		t.ctx.nsqd.logf(LOG_INFO, "TOPIC(%s): new channel(%s)", t.name, channel.name)
 		return channel, true

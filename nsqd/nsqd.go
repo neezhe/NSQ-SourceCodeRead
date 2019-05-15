@@ -223,7 +223,6 @@ func (n *NSQD) GetHealth() string {
 func (n *NSQD) GetStartTime() time.Time {
 	return n.startTime
 }
-
 func (n *NSQD) AddClient(clientID int64, client Client) {
 	n.clientLock.Lock()
 	n.clients[clientID] = client

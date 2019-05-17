@@ -51,7 +51,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 	//因为当前客户端在后面可能修改相关的数据。消息的订阅发布工作在辅助的messagePump携程处理，下面创建
 	messagePumpStartedChan := make(chan bool)
 	go p.messagePump(client, messagePumpStartedChan)
-	<-messagePumpStartedChan
+	<-messagePumpStartedChan //为空的时候会阻塞在此处。
 	//开始循环读取客户端请求然后解析参数，进行处理, 这个工作在客户端的主协程处理
 	for {
 		if client.HeartbeatInterval > 0 {
@@ -83,7 +83,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 		p.ctx.nsqd.logf(LOG_DEBUG, "PROTOCOL(V2): [%s] %s", client, params)
 
 		var response []byte
-		response, err = p.Exec(client, params) //执行这条命令
+		response, err = p.Exec(client, params) //执行这条命令，是FIN还是SUB等
 		if err != nil {
 			ctx := ""
 			if parentErr := err.(protocol.ChildErr).Parent(); parentErr != nil {
@@ -212,7 +212,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 	var flusherChan <-chan time.Time
 	var sampleRate int32
 
-	subEventChan := client.SubEventChan//subEventChan 是客户端有订阅行为的通知channel，订阅一次后会重置为null。
+	subEventChan := client.SubEventChan//subEventChan是客户端有订阅行为的通知channel，订阅一次后会重置为null。
 	identifyEventChan := client.IdentifyEventChan
 	outputBufferTicker := time.NewTicker(client.OutputBufferTimeout)
 	heartbeatTicker := time.NewTicker(client.HeartbeatInterval)

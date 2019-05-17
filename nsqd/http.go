@@ -204,7 +204,7 @@ func (s *httpServer) doPUB(w http.ResponseWriter, req *http.Request, ps httprout
 		return nil, http_api.Err{400, "MSG_EMPTY"}
 	}
 
-	reqParams, topic, err := s.getTopicFromQuery(req)
+	reqParams, topic, err := s.getTopicFromQuery(req) //首先要拿到topic信息
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +224,7 @@ func (s *httpServer) doPUB(w http.ResponseWriter, req *http.Request, ps httprout
 
 	msg := NewMessage(topic.GenerateID(), body)
 	msg.deferred = deferred
-	err = topic.PutMessage(msg)
+	err = topic.PutMessage(msg) //publish消息，把消息放到队列中。
 	if err != nil {
 		return nil, http_api.Err{503, "EXITING"}
 	}

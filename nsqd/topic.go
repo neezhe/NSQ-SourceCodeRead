@@ -83,7 +83,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		)
 	}
 
-	t.waitGroup.Wrap(t.messagePump) //异步开启消息循环，这是最重要的异步，开启了一个新的协程处理
+	t.waitGroup.Wrap(t.messagePump) //异步开启消息循环，这是最重要的一步，开启了一个新的协程处理
 
 	t.ctx.nsqd.Notify(t) //通知lookupd有新的topic产生了
 
@@ -227,6 +227,8 @@ func (t *Topic) PutMessages(msgs []*Message) error {
 	return nil
 }
 
+//这里memoryMsgChan的大小我们可以通过--mem-queue-size参数来设置，上面这段代码的流程是如果memoryMsgChan还没有满的话
+//就把消息放到memoryMsgChan中，否则就放到backend(disk)中。topic的mesasgePump检测到有新的消息写入的时候就开始工作了，
 func (t *Topic) put(m *Message) error {
 	select {
 	case t.memoryMsgChan <- m: //将这条消息直接塞入内存管道
@@ -269,7 +271,8 @@ func (t *Topic) messagePump() {
 			continue
 		case <-t.exitChan:
 			goto exit
-		case <-t.startChan:
+		case <-t.startChan: //当pub一个消息后（比如curl -d 'hello world 1' 'http://127.0.0.1:4151/pub?topic=test'），在gettopic中初始化完topic后，会通知此处的startChan
+			//下面就开始从Memory chan或者disk读取消息
 		}
 		break
 	}
@@ -278,12 +281,15 @@ func (t *Topic) messagePump() {
 		chans = append(chans, c)
 	}
 	t.RUnlock()
-	if len(chans) > 0 && !t.IsPaused() {
-		memoryMsgChan = t.memoryMsgChan
+	if len(chans) > 0 && !t.IsPaused() { //topic的mesasgePump检测到有新的消息写入的时候就开始工作了，
+		//从memoryMsgChan/backend(disk)读取消息投递到channel对应的chan中。
+		memoryMsgChan = t.memoryMsgChan //此channel非golang里的channel
 		backendChan = t.backend.ReadChan()
 	}
 
 	// main message loop
+	// 开始从Memory chan或者disk读取消息
+	// 如果topic对应的channel发生了变化，则更新channel信息
 	for {
 		select {
 		case msg = <-memoryMsgChan: //内存队列
@@ -320,7 +326,8 @@ func (t *Topic) messagePump() {
 		case <-t.exitChan:
 			goto exit
 		}
-
+		// 3. 往该tpoic对应的每个channel写入message(如果是deffermessage
+		// 的话放到对应的deffer queue中，否则放到该channel对应的memoryMsgChan中)。
 		for i, channel := range chans { //遍历每个channel,然后将消息一个个发送到channel的流程里面
 			//到这里只有一种可能，有新消息来了, 那么遍历channel，调用PutMessage发送消息
 			chanMsg := msg

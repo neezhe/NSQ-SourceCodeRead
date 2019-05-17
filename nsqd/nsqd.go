@@ -269,7 +269,8 @@ func (n *NSQD) Main() error {
 		})
 	}
 
-	n.waitGroup.Wrap(n.queueScanLoop) //队列scan扫描协程
+	n.waitGroup.Wrap(n.queueScanLoop) //队列scan扫描协程,通过动态的调整queueScanWorker的数目来处理
+	//in-flight和deffered queue的。在具体的算法上的话参考了redis的随机过期算法。
 	n.waitGroup.Wrap(n.lookupLoop) //处理与nsqlookupd进程的交互。
 	if n.getOpts().StatsdAddress != "" {  //如果配置了状态地址，开启状态协程
 		n.waitGroup.Wrap(n.statsdLoop)
@@ -482,7 +483,7 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 	//创建一个topic结构，并且里面初始化好diskqueue, 加入到NSQD的topicmap里面
 	//创建topic的时候，会开启消息协程
 
-	t = NewTopic(topicName, &context{n}, deleteCallback) //创建topic
+	t = NewTopic(topicName, &context{n}, deleteCallback) //创建topic，这个里面会创建topic的messagePump协程。
 	n.topicMap[topicName] = t
 
 	n.Unlock()

@@ -622,7 +622,7 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	for {
 		//获取topic和channel，将本客户的加入其client队列
 		topic := p.ctx.nsqd.GetTopic(topicName)
-		channel = topic.GetChannel(channelName)
+		channel = topic.GetChannel(channelName) //
 		if err := channel.AddClient(client.ID, client); err != nil {
 			return nil, protocol.NewFatalClientErr(nil, "E_TOO_MANY_CHANNEL_CONSUMERS",
 				fmt.Sprintf("channel consumers for %s:%s exceeds limit of %d",

@@ -47,7 +47,8 @@ type Topic struct {
 
 // Topic constructor
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
-	t := &Topic{  //初始化一个topic结构，并且设置其backend持久化结构，然后开启消息监听协程messagePump, 通知lookupd
+	//初始化一个topic结构，并且设置其backend持久化结构，然后开启消息监听协程messagePump, 通知lookupd
+	t := &Topic{
 		name:              topicName,
 		channelMap:        make(map[string]*Channel),
 		memoryMsgChan:     make(chan *Message, ctx.nsqd.getOpts().MemQueueSize),
@@ -60,7 +61,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		deleteCallback:    deleteCallback, //topic删除函数，其实是DeleteExistingTopic
 		idFactory:         NewGUIDFactory(ctx.nsqd.getOpts().ID),
 	}
-
+	//HasPrefix检查字符串前缀开头，HasSuffix检查字符串后缀结尾。
 	if strings.HasSuffix(topicName, "#ephemeral") { //临时topic以#ephemeral开头，没有持久化机制，只放入内存中，所以其backend其实是个黑洞，直接丢掉
 		t.ephemeral = true
 		t.backend = newDummyBackendQueue()
@@ -83,10 +84,9 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		)
 	}
 
-	t.waitGroup.Wrap(t.messagePump) //异步开启消息循环，这是最重要的一步，开启了一个新的协程处理
+	t.waitGroup.Wrap(t.messagePump) //异步开启消息循环messagePump协程，这是最重要的一步。阻塞等待被唤醒。
 
-	t.ctx.nsqd.Notify(t) //通知lookupd有新的topic产生了
-
+	t.ctx.nsqd.Notify(t) //通知lookupd有新的topic产生了，在nsqd的main函数中运行了一个lookup的协程检测notifyChan中有没有数据，有的话就向nsqlookupd发送，tcp的方式
 	return t
 }
 
@@ -108,7 +108,7 @@ func (t *Topic) Exiting() bool {
 func (t *Topic) GetChannel(channelName string) *Channel {
 	//获取topic的channel，如果之前没有是新建的，则通知channelUpdateChan去刷新订阅状态
 	t.Lock()
-	channel, isNew := t.getOrCreateChannel(channelName)
+	channel, isNew := t.getOrCreateChannel(channelName) //拿到channel
 	t.Unlock()
 
 	if isNew {
@@ -234,7 +234,7 @@ func (t *Topic) put(m *Message) error {
 	case t.memoryMsgChan <- m: //将这条消息直接塞入内存管道
 	default: //如果内存消息管道满了(memoryMsgChan的容量由 getOpts().MemQueueSize设置)，那么就放入到后面的持久化存储里面
 		b := bufferPoolGet()
-		err := writeMessageToBackend(b, m, t.backend)
+		err := writeMessageToBackend(b, m, t.backend) //backend是创建topic的时候建立的diskqueue
 		bufferPoolPut(b)
 		t.ctx.nsqd.SetHealth(err)
 		if err != nil {
@@ -277,14 +277,14 @@ func (t *Topic) messagePump() {
 		break
 	}
 	t.RLock()
-	for _, c := range t.channelMap {
+	for _, c := range t.channelMap {  //拿到这个topic的所有channel
 		chans = append(chans, c)
 	}
 	t.RUnlock()
 	if len(chans) > 0 && !t.IsPaused() { //topic的mesasgePump检测到有新的消息写入的时候就开始工作了，
-		//从memoryMsgChan/backend(disk)读取消息投递到channel对应的chan中。
-		memoryMsgChan = t.memoryMsgChan //此channel非golang里的channel
-		backendChan = t.backend.ReadChan()
+		//从memoryMsgChan/backend(disk)读取消息投递到channel对应的chan中。前者是有缓冲的后者没有。
+		memoryMsgChan = t.memoryMsgChan //是PutMessage在源源不断的向memoryMsgChan中写数据，memoryMsgChan是在NewTopic的时候设置的大小
+		backendChan = t.backend.ReadChan() //下面要从DiskQueue.ReadChan中取消息，在new一个diskqueue的时候会把从文件中读取信息到readChan
 	}
 
 	// main message loop
@@ -292,9 +292,9 @@ func (t *Topic) messagePump() {
 	// 如果topic对应的channel发生了变化，则更新channel信息
 	for {
 		select {
-		case msg = <-memoryMsgChan: //内存队列
-		case buf = <-backendChan:
-			msg, err = decodeMessage(buf)
+		case msg = <-memoryMsgChan: //内存队列,注意每个case互不干扰，msg的值不会进入到下面的一个case中
+		case buf = <-backendChan: //磁盘队列（文件里）
+			msg, err = decodeMessage(buf) //磁盘读出的消息要转换成和内存中一致的消息格式，即message的结构体形式。
 			if err != nil {
 				t.ctx.nsqd.logf(LOG_ERROR, "failed to decode message - %s", err)
 				continue
@@ -344,7 +344,7 @@ func (t *Topic) messagePump() {
 				channel.PutMessageDeferred(chanMsg, chanMsg.deferred)
 				continue
 			}
-			err := channel.PutMessage(chanMsg) //立即投递到channel里面
+			err := channel.PutMessage(chanMsg) //把消息放到channel中是消息发送的最后一环，消息还是被放到磁盘或者内存。
 			if err != nil {
 				t.ctx.nsqd.logf(LOG_ERROR,
 					"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",

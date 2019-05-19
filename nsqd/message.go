@@ -96,5 +96,5 @@ func writeMessageToBackend(buf *bytes.Buffer, msg *Message, bq BackendQueue) err
 	if err != nil {
 		return err
 	}
-	return bq.Put(buf.Bytes())
+	return bq.Put(buf.Bytes()) //此处的put方法是diskqueue的方法，负责把数据写入writechan中去
 }

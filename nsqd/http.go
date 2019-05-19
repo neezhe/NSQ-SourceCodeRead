@@ -163,7 +163,8 @@ func (s *httpServer) getExistingTopicFromQuery(req *http.Request) (*http_api.Req
 }
 
 func (s *httpServer) getTopicFromQuery(req *http.Request) (url.Values, *Topic, error) {
-	reqParams, err := url.ParseQuery(req.URL.RawQuery)
+	//ParseQuery把参数解析成map的形式。
+	reqParams, err := url.ParseQuery(req.URL.RawQuery) //RawQuery指的就是url问号后面的所有参数，不包括#之后的内容。URL结构体中Fragment中存放的就是#号后面的东西。
 	if err != nil {
 		s.ctx.nsqd.logf(LOG_ERROR, "failed to parse request params - %s", err)
 		return nil, nil, http_api.Err{400, "INVALID_REQUEST"}
@@ -173,9 +174,9 @@ func (s *httpServer) getTopicFromQuery(req *http.Request) (url.Values, *Topic, e
 	if !ok {
 		return nil, nil, http_api.Err{400, "MISSING_ARG_TOPIC"}
 	}
-	topicName := topicNames[0]
+	topicName := topicNames[0]//因为ParseQuery解析出来的map中的value都是数组形式，就算只有一个值也是数组的形式，所以此处指明索引为0
 
-	if !protocol.IsValidTopicName(topicName) {
+	if !protocol.IsValidTopicName(topicName) {//验证topic格式
 		return nil, nil, http_api.Err{400, "INVALID_TOPIC"}
 	}
 
@@ -186,13 +187,15 @@ func (s *httpServer) doPUB(w http.ResponseWriter, req *http.Request, ps httprout
 	// TODO: one day I'd really like to just error on chunked requests
 	// to be able to fail "too big" requests before we even read
 
-	if req.ContentLength > s.ctx.nsqd.getOpts().MaxMsgSize {
+	if req.ContentLength > s.ctx.nsqd.getOpts().MaxMsgSize {  //发送消息的长度和配置设定的大小对比
 		return nil, http_api.Err{413, "MSG_TOO_BIG"}
 	}
 
 	// add 1 so that it's greater than our max when we test for it
 	// (LimitReader returns a "fake" EOF)
 	readMax := s.ctx.nsqd.getOpts().MaxMsgSize + 1
+	//io.LimitReader从reader中读取readMax字节
+	//ioutil.ReadAll一次性全部读取，成功后err返回nil,而非EOF.
 	body, err := ioutil.ReadAll(io.LimitReader(req.Body, readMax))
 	if err != nil {
 		return nil, http_api.Err{500, "INTERNAL_ERROR"}
@@ -203,8 +206,9 @@ func (s *httpServer) doPUB(w http.ResponseWriter, req *http.Request, ps httprout
 	if len(body) == 0 {
 		return nil, http_api.Err{400, "MSG_EMPTY"}
 	}
-
-	reqParams, topic, err := s.getTopicFromQuery(req) //首先要拿到topic信息
+	//1.看有没有topic，有则返回
+	//无则创建topic，并通知lookup，创建完后通知此topic的messagePump跑起来
+	reqParams, topic, err := s.getTopicFromQuery(req) //首先要从http query中拿到topi
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +228,7 @@ func (s *httpServer) doPUB(w http.ResponseWriter, req *http.Request, ps httprout
 
 	msg := NewMessage(topic.GenerateID(), body)
 	msg.deferred = deferred
-	err = topic.PutMessage(msg) //publish消息，把消息放到队列中。
+	err = topic.PutMessage(msg) //publish消息，把消息放到内存或者磁盘队列中。
 	if err != nil {
 		return nil, http_api.Err{503, "EXITING"}
 	}

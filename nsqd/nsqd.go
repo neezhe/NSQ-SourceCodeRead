@@ -466,7 +466,7 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 	n.RLock() //先锁着看一下有没有
 	t, ok := n.topicMap[topicName]
 	n.RUnlock()
-	if ok {
+	if ok { //如果NSQD找到了这个topic
 		return t
 	}
 	//不存在这topc，得new一个了,  所以直接加锁了整个nsqd结构
@@ -477,13 +477,12 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 		n.Unlock()
 		return t
 	}
-	deleteCallback := func(t *Topic) {
-		n.DeleteExistingTopic(t.name)//topic的删除函数
+	deleteCallback := func(t *Topic) {//声明topic的删除函数
+		n.DeleteExistingTopic(t.name)
 	}
 	//创建一个topic结构，并且里面初始化好diskqueue, 加入到NSQD的topicmap里面
 	//创建topic的时候，会开启消息协程
-
-	t = NewTopic(topicName, &context{n}, deleteCallback) //创建topic，这个里面会创建topic的messagePump协程。
+	t = NewTopic(topicName, &context{n}, deleteCallback) //创建topic，这个里面会创建topic的messagePump协程接受消息，还会通知lookup加入新的topic，。
 	n.topicMap[topicName] = t
 
 	n.Unlock()
@@ -492,21 +491,23 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 	// topic is created but messagePump not yet started
 
 	// if loading metadata at startup, no lookupd connections yet, topic started after load
-	if atomic.LoadInt32(&n.isLoading) == 1 {
-		return t
+	//“原子的”这个形容词就意味着，在这里读取value的值的同时，当前计算机中的任何CPU都不会进行其它的针对此值的读或写操作。
+	//这样的约束是受到底层硬件的支持的。
+	if atomic.LoadInt32(&n.isLoading) == 1 {//接受一个*int32类型的指针值，并会返回该指针值指向的那个值
+		return t //当正在加载元数据的时候，还没有lookupd连接，topic必须在元数据加载完后才行
 	}
 
 	// if using lookupd, make a blocking call to get the topics, and immediately create them.
 	// this makes sure that any message received is buffered to the right channels
 	//lookupd里面存储所有之前的channel信息，所以这里加载一下，这样消息能不丢
-	lookupdHTTPAddrs := n.lookupdHTTPAddrs()
+	lookupdHTTPAddrs := n.lookupdHTTPAddrs() //首先拿到nsqlookupd服务的HTTP地址
 	if len(lookupdHTTPAddrs) > 0 {
-		channelNames, err := n.ci.GetLookupdTopicChannels(t.name, lookupdHTTPAddrs)
+		channelNames, err := n.ci.GetLookupdTopicChannels(t.name, lookupdHTTPAddrs) //然后根据这个地址拿到channel
 		if err != nil {
 			n.logf(LOG_WARN, "failed to query nsqlookupd for channels to pre-create for topic %s - %s", t.name, err)
 		}
 		for _, channelName := range channelNames {
-			if strings.HasSuffix(channelName, "#ephemeral") { //临时topic不需要预先创建，用到的时候再创建就行
+			if strings.HasSuffix(channelName, "#ephemeral") { //临时cahnnel不需要预先创建，用到的时候再创建就行
 				continue // do not create ephemeral channel with no consumer client
 			}
 			//预先创建一个channel，原因呢？为了让消息能够及时的入队.
@@ -518,7 +519,7 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 	}
 
 	// now that all channels are added, start topic messagePump
-	t.Start()
+	t.Start() //通知Newtopic中的messagePump不要阻塞了，可以开始处理了
 	return t
 }
 
@@ -568,12 +569,12 @@ func (n *NSQD) Notify(v interface{}) {
 		// we do not block exit, see issue #123
 		select {
 		case <-n.exitChan:
-		case n.notifyChan <- v:
+		case n.notifyChan <- v:  //把新生成的topic或者channel放到notifyChan
 			if !persist {
 				return
 			}
 			n.Lock()
-			err := n.PersistMetadata()
+			err := n.PersistMetadata() //持久化
 			if err != nil {
 				n.logf(LOG_ERROR, "failed to persist metadata - %s", err)
 			}

@@ -50,7 +50,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 	//上面注释说了，这里做同步的原因在于，需要确保messagePump里面的初始化完成，再进行下面的操作，
 	//因为当前客户端在后面可能修改相关的数据。消息的订阅发布工作在辅助的messagePump携程处理，下面创建
 	messagePumpStartedChan := make(chan bool)
-	go p.messagePump(client, messagePumpStartedChan)
+	go p.messagePump(client, messagePumpStartedChan)//从该client订阅的channel中读取消息并发送给consumer（通过SendMessage），这个操作的上游就是tpoic的messagePump把消息放入channel
 	<-messagePumpStartedChan //为空的时候会阻塞在此处。
 	//开始循环读取客户端请求然后解析参数，进行处理, 这个工作在客户端的主协程处理
 	for {
@@ -772,7 +772,7 @@ func (p *protocolV2) CLS(client *clientV2, params [][]byte) ([]byte, error) {
 func (p *protocolV2) NOP(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, nil
 }
-
+//这是用tcp的方式来PUB,但是和用http的方式大同小异，详情见http的doPUB
 func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 	var err error
 

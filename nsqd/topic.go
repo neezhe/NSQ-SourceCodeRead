@@ -328,9 +328,9 @@ func (t *Topic) messagePump() {
 		}
 		// 3. 往该tpoic对应的每个channel写入message(如果是deffermessage
 		// 的话放到对应的deffer queue中，否则放到该channel对应的memoryMsgChan中)。
-		for i, channel := range chans { //遍历每个channel,然后将消息一个个发送到channel的流程里面
+		for i, channel := range chans { //遍历每个channel,然后将消息一个个发送到channel的流程里面.看到没，此处就是将一条topic的消息多播到多有的channel,然后消费者通过订阅的channel读取，如果一个channel上面有多个consumer，则随机。
 			//到这里只有一种可能，有新消息来了, 那么遍历channel，调用PutMessage发送消息
-			chanMsg := msg
+			chanMsg := msg //为啥要拷贝？
 			// copy the message because each channel
 			// needs a unique instance but...
 			// fastpath to avoid copy if its the first channel

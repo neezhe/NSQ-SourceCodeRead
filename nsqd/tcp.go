@@ -41,7 +41,7 @@ func (p *tcpServer) Handle(clientConn net.Conn) {
 		return
 	}
 
-	err = prot.IOLoop(clientConn) //消费者（此处的消费者指用户）的每一个请求都开一个协程，然后进入到此处处理，
+	err = prot.IOLoop(clientConn) //进入到此处处理，
 	if err != nil {
 		p.ctx.nsqd.logf(LOG_ERROR, "client(%s) - %s", clientConn.RemoteAddr(), err)
 		return

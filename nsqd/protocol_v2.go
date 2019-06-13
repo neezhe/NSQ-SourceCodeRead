@@ -201,6 +201,11 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, protocol.NewFatalClientErr(nil, "E_INVALID", fmt.Sprintf("invalid command %s", params[0]))
 }
 
+//1. nsqd每个连接上来的客户端会创建一个protocolV2.messagePump协程负责订阅消息，做超时处理；
+//2. 客户端发送SUB命令后，SUB()函数会通知客户端的messagePump携程去订阅这个channel的消息；
+//3. messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
+//4. 只要有生产者发送消息后，channel.memoryMsgChan便会有新的消息到来，其中一个客户端就能获得管道的消息；
+//5. 拿到消息后调用StartInFlightTimeout将消息放到队列，用来做超时重传，然后调用SendMessage发送给客户端 ；
 func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 	var err error
 	var memoryMsgChan chan *Message
@@ -254,7 +259,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 		} else {
 			// we're buffered (if there isn't any more data we should flush)...
 			// select on the flusher ticker channel, too
-			memoryMsgChan = subChannel.memoryMsgChan
+			memoryMsgChan = subChannel.memoryMsgChan  //messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
 			backendMsgChan = subChannel.backend.ReadChan()
 			flusherChan = outputBufferTicker.C
 		}
@@ -273,10 +278,8 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 			flushed = true
 		case <-client.ReadyStateChan:
 		case subChannel = <-subEventChan:
-			//当客户端发送了SUB操作后，会通过这个管道，塞入我所应该订阅的topic，然后这里就得到了对应应该订阅的channel，
+			//当客户端发送了SUB操作后，通知此后台消息循环协程：你需要订阅一个新的channel并且关注其事件。
 			//然后就在上面的循环中设置对应的memoryMsgChan 或者backend.ReadChan() 进行监听
-			//所以nsq是通过前台跟客户端交互协程通知后台消息循环协程，你需要订阅一个新的channel并且关注其事件。 这么来订阅的
-			// you can't SUB anymore
 			subEventChan = nil
 		case identifyData := <-identifyEventChan:
 			// you can't IDENTIFY anymore
@@ -620,7 +623,7 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	// Avoid adding a client to an ephemeral channel / topic which has started exiting.
 	var channel *Channel
 	for {
-		//获取topic和channel，将本客户的加入其client队列
+		//获取topic和channel，将本客户端的加入其client队列
 		topic := p.ctx.nsqd.GetTopic(topicName)
 		channel = topic.GetChannel(channelName) //
 		if err := channel.AddClient(client.ID, client); err != nil {

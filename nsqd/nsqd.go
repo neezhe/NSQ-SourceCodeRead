@@ -253,25 +253,25 @@ func (n *NSQD) Main() error {
 			exitCh <- err
 		})
 	}
-
+//tcp服务可以当生产者发消息也可以当消费者订阅消息，http服务可以用来当生产者发消息（不可以订阅）还可以提供给nsqadmin获取该nsqd本地topic和channel信息
 	tcpServer := &tcpServer{ctx: ctx}
 	n.waitGroup.Wrap(func() {
-		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf))  //tcp服务，tcp的处理函数和nsqlookupd中的不一样。
+		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf))  //tcp服务，tcp的处理函数和nsqlookupd中的不一样。它可以PUB
 	})
 	httpServer := newHTTPServer(ctx, false, n.getOpts().TLSRequired == TLSRequired)
 	n.waitGroup.Wrap(func() {
-		exitFunc(http_api.Serve(n.httpListener, httpServer, "HTTP", n.logf)) //http服务
+		exitFunc(http_api.Serve(n.httpListener, httpServer, "HTTP", n.logf)) //http服务。可以PUB
 	})
 	if n.tlsConfig != nil && n.getOpts().HTTPSAddress != "" {
 		httpsServer := newHTTPServer(ctx, true, true)
-		n.waitGroup.Wrap(func() {
+		n.waitGroup.Wrap(func() {//它也能在第三个端口监听 HTTPS
 			exitFunc(http_api.Serve(n.httpsListener, httpsServer, "HTTPS", n.logf)) //https服务
 		})
 	}
 
-	n.waitGroup.Wrap(n.queueScanLoop) //队列scan扫描协程,通过动态的调整queueScanWorker的数目来处理
+	n.waitGroup.Wrap(n.queueScanLoop) //队列scan扫描协程,通过动态的调整queueScanWorker的数目来处理，用于进行msg重试。
 	//in-flight和deffered queue的。在具体的算法上的话参考了redis的随机过期算法。
-	n.waitGroup.Wrap(n.lookupLoop) //处理与nsqlookupd进程的交互。
+	n.waitGroup.Wrap(n.lookupLoop) //处理与nsqlookupd进程的交互。和lookupd建立长连接，每隔15s ping一下lookupd，新增或者删除topic的时候通知到lookupd，新增或者删除channel的时候通知到lookupd，动态的更新options
 	if n.getOpts().StatsdAddress != "" {  //如果配置了状态地址，开启状态协程
 		n.waitGroup.Wrap(n.statsdLoop)
 	}

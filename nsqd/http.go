@@ -208,7 +208,7 @@ func (s *httpServer) doPUB(w http.ResponseWriter, req *http.Request, ps httprout
 	}
 	//1.看有没有topic，有则返回
 	//无则创建topic，并通知lookup，创建完后通知此topic的messagePump跑起来
-	reqParams, topic, err := s.getTopicFromQuery(req) //首先要从http query中拿到topi
+	reqParams, topic, err := s.getTopicFromQuery(req) //首先要从http query中拿到topic
 	if err != nil {
 		return nil, err
 	}

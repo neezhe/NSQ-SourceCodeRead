@@ -25,8 +25,8 @@ type Topic struct {
 
 	name              string
 	channelMap        map[string]*Channel //最主要的变量在于channelMap，这是这个topic的所有channel结构。
-	backend           BackendQueue //backend是对应的持久化磁盘存储的管道。
-	memoryMsgChan     chan *Message //memoryMsgChan 是这个topic对应的内存管道
+	backend           BackendQueue //backend是对应的持久化磁盘存储的队列。
+	memoryMsgChan     chan *Message //memoryMsgChan 是这个topic对应的内存队列
 	startChan         chan int
 	exitChan          chan int
 	channelUpdateChan chan int
@@ -47,7 +47,7 @@ type Topic struct {
 
 // Topic constructor
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
-	//初始化一个topic结构，并且设置其backend持久化结构，然后开启消息监听协程messagePump, 通知lookupd
+	//初始化一个topic结构，并且设置其backend持久化结构，然后开启消息监听协程messagePump,处理消息。
 	t := &Topic{
 		name:              topicName,
 		channelMap:        make(map[string]*Channel),
@@ -64,7 +64,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 	//HasPrefix检查字符串前缀开头，HasSuffix检查字符串后缀结尾。
 	if strings.HasSuffix(topicName, "#ephemeral") { //临时topic以#ephemeral开头，没有持久化机制，只放入内存中，所以其backend其实是个黑洞，直接丢掉
 		t.ephemeral = true
-		t.backend = newDummyBackendQueue()
+		t.backend = newDummyBackendQueue()//生成一个go chan
 	} else {
 		//正常的topic，需要设置其log函数，以及最重要的，backend持久化机制
 		dqLogf := func(level diskqueue.LogLevel, f string, args ...interface{}) {
@@ -233,7 +233,7 @@ func (t *Topic) put(m *Message) error {
 	select {
 	case t.memoryMsgChan <- m: //将这条消息直接塞入内存管道
 	default: //如果内存消息管道满了(memoryMsgChan的容量由 getOpts().MemQueueSize设置)，那么就放入到后面的持久化存储里面
-		b := bufferPoolGet()
+		b := bufferPoolGet() // 复用buffer，减少对象生成
 		err := writeMessageToBackend(b, m, t.backend) //backend是创建topic的时候建立的diskqueue
 		bufferPoolPut(b)
 		t.ctx.nsqd.SetHealth(err)
@@ -253,7 +253,8 @@ func (t *Topic) Depth() int64 {
 
 // messagePump selects over the in-memory and backend queue and
 // writes messages to every channel for this topic
-//主要就是订阅了内存和磁盘队列消息，这样在“topic.PutMessage 到 topic.memoryMsgChan”之后，下面的select就会检测到有消息到来
+//下面的select就会检测到有消息到来
+//主要是接收来自backend和memoryMsgChan的消息，然后转发给每一个channel
 func (t *Topic) messagePump() {
 	var msg *Message
 	var buf []byte
@@ -283,7 +284,7 @@ func (t *Topic) messagePump() {
 	t.RUnlock()
 	if len(chans) > 0 && !t.IsPaused() { //topic的mesasgePump检测到有新的消息写入的时候就开始工作了，
 		//从memoryMsgChan/backend(disk)读取消息投递到channel对应的chan中。前者是有缓冲的后者没有。
-		memoryMsgChan = t.memoryMsgChan //是PutMessage在源源不断的向memoryMsgChan中写数据，memoryMsgChan是在NewTopic的时候设置的大小
+		memoryMsgChan = t.memoryMsgChan //是topic.PutMessage在源源不断的向memoryMsgChan中写数据，memoryMsgChan是在NewTopic的时候设置的大小
 		backendChan = t.backend.ReadChan() //下面要从DiskQueue.ReadChan中取消息，在new一个diskqueue的时候会把从文件中读取信息到readChan
 	}
 

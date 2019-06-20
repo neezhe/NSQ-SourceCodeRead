@@ -186,7 +186,7 @@ func (t *Topic) DeleteExistingChannel(channelName string) error {
 func (t *Topic) PutMessage(m *Message) error {
 	t.RLock()
 	defer t.RUnlock()
-	//简单看一下是不是我们正在退出状态，如果是就直接返回
+	//简单看一下是不是我们正在退出状态，如果是就直接返回。这里使用了一个atomic Int32类型的exitFlag退出标志。
 	if atomic.LoadInt32(&t.exitFlag) == 1 {
 		return errors.New("exiting")
 	}
@@ -197,8 +197,8 @@ func (t *Topic) PutMessage(m *Message) error {
 	if err != nil {
 		return err
 	}
-	atomic.AddUint64(&t.messageCount, 1)
-	atomic.AddUint64(&t.messageBytes, uint64(len(m.Body)))
+	atomic.AddUint64(&t.messageCount, 1) //消息计数
+	atomic.AddUint64(&t.messageBytes, uint64(len(m.Body))) //记录消息长度
 	return nil
 }
 
@@ -230,12 +230,15 @@ func (t *Topic) PutMessages(msgs []*Message) error {
 //这里memoryMsgChan的大小我们可以通过--mem-queue-size参数来设置，上面这段代码的流程是如果memoryMsgChan还没有满的话
 //就把消息放到memoryMsgChan中，否则就放到backend(disk)中。topic的mesasgePump检测到有新的消息写入的时候就开始工作了，
 func (t *Topic) put(m *Message) error {
+	// 这里巧妙利用了 chan 的特性
+	// 先写入memoryMsgChan这个队列,假如 memoryMsgChan已满, 不可写入
+	// golang 就会执行 default 语句,
 	select {
 	case t.memoryMsgChan <- m: //将这条消息直接塞入内存管道
 	default: //如果内存消息管道满了(memoryMsgChan的容量由 getOpts().MemQueueSize设置)，那么就放入到后面的持久化存储里面
-		b := bufferPoolGet() // 复用buffer，减少对象生成
+		b := bufferPoolGet() // 复用buffer，减少对象生成，阅读一下sync.Pool包
 		err := writeMessageToBackend(b, m, t.backend) //backend是创建topic的时候建立的diskqueue
-		bufferPoolPut(b)
+		bufferPoolPut(b)// 放回缓存池
 		t.ctx.nsqd.SetHealth(err)
 		if err != nil {
 			t.ctx.nsqd.logf(LOG_ERROR,
@@ -277,8 +280,8 @@ func (t *Topic) messagePump() {
 		}
 		break
 	}
-	t.RLock()
-	for _, c := range t.channelMap {  //拿到这个topic的所有channel
+	t.RLock()//避免锁竞争, 所以缓存已存在的 channel
+	for _, c := range t.channelMap {  //拿到这个topic的所有channel,多线程中遍历类中一个成员变量的操作, 需要给 类加锁
 		chans = append(chans, c)
 	}
 	t.RUnlock()
@@ -300,7 +303,9 @@ func (t *Topic) messagePump() {
 				t.ctx.nsqd.logf(LOG_ERROR, "failed to decode message - %s", err)
 				continue
 			}
-		case <-t.channelUpdateChan:
+		case <-t.channelUpdateChan: //只在更新的时候才加锁获取channel,这样就避免了一次循环就加锁获取的低效操作。
+			//上面避免锁竞争, 缓存了这个topic已存在的所有channel
+			//假如更新channel，会发一个 消息过来,重新读取 channel
 			chans = chans[:0]
 			t.RLock()
 			for _, c := range t.channelMap {

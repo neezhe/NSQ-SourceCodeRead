@@ -103,6 +103,8 @@ func (l *NSQLookupd) RealHTTPAddr() *net.TCPAddr {
 }
 //退出nsqloopupd进程，关闭两个Listener，等待TCP和HTTP线程都关闭了，才关闭自身
 func (l *NSQLookupd) Exit() {
+	//Close 之后, listener.Accept() 就会返回error,
+	//从而退出循环, 主线程退出后通过此方法通知TCPServer线程退出。
 	if l.tcpListener != nil {
 		l.tcpListener.Close()
 	}
@@ -110,5 +112,5 @@ func (l *NSQLookupd) Exit() {
 	if l.httpListener != nil {
 		l.httpListener.Close()
 	}
-	l.waitGroup.Wait() //waitGroup.Wrap修饰的函数都是几个重要的函数，所以此处需要通过同步来控制。
+	l.waitGroup.Wait() //waitGroup.Wrap修饰的函数都是几个重要的routine，所以当main主routine退出后，要等待其他routine优雅的退出后才行。
 }

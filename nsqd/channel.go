@@ -460,8 +460,8 @@ func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout tim
 	now := time.Now()
 	msg.clientID = clientID
 	msg.deliveryTS = now
-	msg.pri = now.Add(timeout).UnixNano()//初始化消息的过期时间为timeout+now
-	err := c.pushInFlightMessage(msg)
+	msg.pri = now.Add(timeout).UnixNano()//初始化消息的过期时间为timeout+now,pri是优先级的缩写，此处就是按照过期的优先级进行堆排序存放的。
+	err := c.pushInFlightMessage(msg)//此处入队，processInFlightQueue处出队。
 	if err != nil {
 		return err
 	}
@@ -600,9 +600,9 @@ func (c *Channel) processDeferredQueue(t int64) bool {
 exit:
 	return dirty
 }
-
+///把 InFlightQueue里,优先级小于参数t的,全部重新发送
 func (c *Channel) processInFlightQueue(t int64) bool {
-	c.exitMutex.RLock()
+	c.exitMutex.RLock() // 先检查是否已经退出
 	defer c.exitMutex.RUnlock()
 
 	if c.Exiting() {
@@ -615,7 +615,7 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 		msg, _ := c.inFlightPQ.PeekAndShift(t) // 从队列中获取已经过期的消息
 		c.inFlightMutex.Unlock()
 
-		if msg == nil {
+		if msg == nil {//如果没有取到消息，那么就返回，仍然保持dirty := false
 			goto exit
 		}
 		dirty = true
@@ -631,7 +631,7 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 		if ok {
 			client.TimedOutMessage()
 		}
-		c.put(msg)// 消息在channel中发起重新投递
+		c.put(msg)// 消息在channel中发起重新投递，重新塞入原始发送队列: channel.memoryMsgChan <- m
 	}
 
 exit:

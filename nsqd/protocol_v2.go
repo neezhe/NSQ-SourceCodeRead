@@ -32,6 +32,7 @@ var okBytes = []byte("OK")
 type protocolV2 struct {
 	ctx *context
 }
+//IOLoop 里主要就是启动了两个线程, 一个处理订阅的消息的发送, 一个处理client 发过来的命令请求
 //V2协议大致为“  V2 command params\n”或“  V2 command params\r\n”
 func (p *protocolV2) IOLoop(conn net.Conn) error {
 	var err error
@@ -52,11 +53,16 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 	messagePumpStartedChan := make(chan bool)
 	go p.messagePump(client, messagePumpStartedChan)//从该client订阅的channel中读取消息并发送给consumer（通过SendMessage），这个操作的上游就是tpoic的messagePump把消息放入channel
 	<-messagePumpStartedChan //为空的时候会阻塞在此处。
-	//开始循环读取客户端请求然后解析参数，进行处理, 这个工作在客户端的主协程处理
+	//下面开始处理client请求，开始循环读取客户端请求然后解析参数，进行处理, 这个工作在客户端的主协程处理
 	for {
+		// 如果 client 设置需要做心跳检查, 则设置 读超时为 两倍 心跳检查间隔
+		// 也就是说, 在这个时间里, 正常情况下, client肯定会在这个间隔内发一个心跳包过来
+		// read 不会因为client 本来就没消息而超时,
+		// 但是如果还是超时了, 那就肯定是 网络连接除了问题
 		if client.HeartbeatInterval > 0 {
 			client.SetReadDeadline(time.Now().Add(client.HeartbeatInterval * 2))
 		} else {
+			// 加入client 不设置做心跳则不设置读超时
 			client.SetReadDeadline(zeroTime)
 		}
 
@@ -71,13 +77,14 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 			}
 			break
 		}
-
+		// 这个V2 版本的协议, 一行是一个命令
 		// trim the '\n'
 		line = line[:len(line)-1]
-		// optionally trim the '\r'
+		// optionally trim the '\r'， 处理一下\r, 有可能win版本的回车是 \r\n
 		if len(line) > 0 && line[len(line)-1] == '\r' {
 			line = line[:len(line)-1]
 		}
+		// 每个命令, 用空格来划分参数
 		params := bytes.Split(line, separatorBytes)
 
 		p.ctx.nsqd.logf(LOG_DEBUG, "PROTOCOL(V2): [%s] %s", client, params)
@@ -103,7 +110,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 			}
 			continue
 		}
-
+		// 假如命令是有 '响应' 的, 发送响应
 		if response != nil {
 			err = p.Send(client, frameTypeResponse, response)
 			if err != nil {
@@ -115,7 +122,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 
 	p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(V2): [%s] exiting ioloop", client)
 	conn.Close()
-	close(client.ExitChan)
+	close(client.ExitChan)// 通知 messagePump 退出
 	if client.Channel != nil {
 		client.Channel.RemoveClient(client.ID)
 	}
@@ -142,7 +149,7 @@ func (p *protocolV2) SendMessage(client *clientV2, msg *Message) error {
 }
 
 func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error {
-	client.writeLock.Lock()
+	client.writeLock.Lock()// 因为client的处理还有一个 messagePump线程, 所以发送要锁
 
 	var zeroTime time.Time
 	if client.HeartbeatInterval > 0 {
@@ -150,7 +157,9 @@ func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error 
 	} else {
 		client.SetWriteDeadline(zeroTime)
 	}
-
+	//V2协议版本发送给client, 是使用[(4byte)消息长度 , (4byte)消息类型, (载体)] 的 帧格式
+	//但是为什么这个格式的封装不写在 protocal_v2.go 而是在protocaol定义上?
+	//个人觉得, 具体封包格式的 '具体实现' 应该在 '协议的具体实现'里, 也就是 protocal_v2,而不是 '协议的定义' 里
 	_, err := protocol.SendFramedResponse(client.Writer, frameType, data)
 	if err != nil {
 		client.writeLock.Unlock()
@@ -167,14 +176,15 @@ func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error 
 }
 
 func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
-	if bytes.Equal(params[0], []byte("IDENTIFY")) {
+	if bytes.Equal(params[0], []byte("IDENTIFY")) {//这个命令不需要做认证
 		return p.IDENTIFY(client, params)
 	}
-	err := enforceTLSPolicy(client, p, params[0])
+	err := enforceTLSPolicy(client, p, params[0])// client是否做了认证
 	if err != nil {
 		return nil, err
 	}
 	switch {
+	//当一个客户端成功接收到msg 并处理完成, 按照协议会向nsqd 发送一个 "FIN" 命令通知nsqd, 这时候nsqd 会将这条msg 从InFlight队列中删除
 	case bytes.Equal(params[0], []byte("FIN")): //消费者收到msgid后，发送FIN+msgid通知服务器成功投递消息，可以清空消息了
 		return p.FIN(client, params)
 	case bytes.Equal(params[0], []byte("RDY")):
@@ -206,7 +216,7 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 //3. messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
 //4. 只要有生产者发送消息后，channel.memoryMsgChan便会有新的消息到来，其中一个客户端就能获得管道的消息；
 //5. 拿到消息后调用StartInFlightTimeout将消息放到队列，用来做超时重传，然后调用SendMessage发送给客户端 ；
-func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
+func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pump就是水泵的意思，就是把消息抽出来发给client
 	var err error
 	var memoryMsgChan chan *Message
 	var backendMsgChan chan []byte
@@ -235,11 +245,11 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 	// signal to the goroutine that started the messagePump
 	// that we've started up
 	close(startedChan)
-
-	for { //循环最开始是阻塞等待在case subChannel = <-subEventChan处，TCP连接中发送了SUB命令后，会通知此阻塞解除，就会阻塞在
-		if subChannel == nil || !client.IsReadyForMessages() {
+    //开始处理client请求
+	for { //每次select中的chan有值都会跑一次for循环，每次循环都会跑一下此处的if语句。
+		if subChannel == nil || !client.IsReadyForMessages() {//第一次进入到此messagePump函数中时，会进入到此if语句，因为subChannel == nil
 			// the client is not ready to receive messages...
-			memoryMsgChan = nil
+			memoryMsgChan = nil//当客户端订阅的channel还未创建完毕时，或者没有准备好时，与该channel相关联的用于接收消息的内存消息队列和磁盘消息队列都会被置位空，进而不会接收到任何消息。
 			backendMsgChan = nil
 			flusherChan = nil
 			// force flush
@@ -264,8 +274,8 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 			flusherChan = outputBufferTicker.C
 		}
 
-		select {
-		case <-flusherChan:
+		select {// 这里负责执行Client 的各种事件
+		case <-flusherChan: //定时chan
 			// if this case wins, we're either starved
 			// or we won the race between other channels...
 			// in either case, force flush
@@ -276,8 +286,8 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 				goto exit
 			}
 			flushed = true
-		case <-client.ReadyStateChan:
-		case subChannel = <-subEventChan://subChannel是有用的，在下面被用到
+		case <-client.ReadyStateChan: //这个case下面没有什么要处理的，目的就是解除阻塞，进行for循环上面的if语句判断。
+		case subChannel = <-subEventChan://subChannel是有用的，在下面被用到，subChannel就是订阅Chnanel,Client需要发送一个SUB请求来订阅Channel,并且一个Client只能订阅一个Channel
 			//当客户端发送了SUB操作后，通知此后台消息循环协程：你需要订阅一个新的channel并且关注其事件。
 			//然后就在上面的循环中设置对应的memoryMsgChan 或者backend.ReadChan() 进行监听
 			subEventChan = nil
@@ -790,7 +800,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 			fmt.Sprintf("PUB topic name %q is not valid", topicName))
 	}
 
-	bodyLen, err := readLen(client.Reader, client.lenSlice)
+	bodyLen, err := readLen(client.Reader, client.lenSlice)//消息体, 在client 请求的下一行开始, 头4个字节是消息体长度
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body size")
 	}
@@ -805,18 +815,18 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 			fmt.Sprintf("PUB message too big %d > %d", bodyLen, p.ctx.nsqd.getOpts().MaxMsgSize))
 	}
 
-	messageBody := make([]byte, bodyLen)
+	messageBody := make([]byte, bodyLen) //建立缓冲区，并将此长度的消息读入
 	_, err = io.ReadFull(client.Reader, messageBody)
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body")
 	}
-
+	//client 是否有权限对这个 topic 做 PUB 操作
 	if err := p.CheckAuth(client, "PUB", topicName, ""); err != nil {
 		return nil, err
 	}
 	//get一下topic，如果没有会自动创建，并且开启topic的消息循环，开始从lookupd同步消息
 	topic := p.ctx.nsqd.GetTopic(topicName)
-	msg := NewMessage(topic.GenerateID(), messageBody)
+	msg := NewMessage(topic.GenerateID(), messageBody) //GenerateID产生一个消息的唯一标识符
 	err = topic.PutMessage(msg) //实际上就是topic.put,将消息放入t.memoryMsgChan或者磁盘后就返回了。客户端流程结束.
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_PUB_FAILED", "PUB failed "+err.Error())

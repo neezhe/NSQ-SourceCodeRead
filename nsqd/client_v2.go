@@ -49,8 +49,9 @@ type identifyEvent struct {
 
 type clientV2 struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
-	ReadyCount    int64
-	InFlightCount int64
+	//两个变量来判断客户端是否准备好接收消息
+	ReadyCount    int64 //ReadyCount变量就是我们所说的RDY计数，用于表示当前客户端能够接收的消息数量。
+	InFlightCount int64	//InFlightCount，该变量表示当前仍在“飞行中”即仍在发送过程中或是客户端处理过程中的消息数量
 	MessageCount  uint64
 	FinishCount   uint64
 	RequeueCount  uint64
@@ -308,7 +309,9 @@ func (p *prettyConnectionState) GetVersion() string {
 		return fmt.Sprintf("Unknown %d", p.Version)
 	}
 }
-
+//在这里会检查使用这条连接的客户端是否准备好接收消息，具体来说是通过下面两个变量（ReadyCount和InFlightCount）来判断客户端是否准备好接收消息
+//ReadyCount变量就是我们所说的RDY计数，用于表示当前客户端还能够接收的消息数量。
+//InFlightCount，该变量表示当前仍在“飞行中”即仍在发送过程中或是客户端处理过程中的消息数量
 func (c *clientV2) IsReadyForMessages() bool {
 	if c.Channel.IsPaused() {
 		return false
@@ -318,11 +321,12 @@ func (c *clientV2) IsReadyForMessages() bool {
 	inFlightCount := atomic.LoadInt64(&c.InFlightCount)
 
 	c.ctx.nsqd.logf(LOG_DEBUG, "[%s] state rdy: %4d inflt: %4d", c, readyCount, inFlightCount)
-
+//如果readyCount <= 0成立，那么此时客户端无法接收任何一条消，所以此时不应向客户端发送消息。这个变量在客户端发送RDY命令后才会大于0
+//如果inFlightCount >= readyCount成立，那么正在发送的消息和客户端正在处理的消息数量已经超出了客户端的承受范围，所以此时也不应向客户端发送消息。
 	if inFlightCount >= readyCount || readyCount <= 0 {
 		return false
 	}
-
+//这样，我们就知道了nsqd什么时候才会向客户端推送消息，所以关于nsqd上的RDY机制，我们只需弄清楚有哪些地方会更改以上变量即可。
 	return true
 }
 

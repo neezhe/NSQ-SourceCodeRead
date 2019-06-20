@@ -269,7 +269,7 @@ func (n *NSQD) Main() error {
 		})
 	}
 
-	n.waitGroup.Wrap(n.queueScanLoop) //用于进行msg重试，作用对象是inflight队列和deferred队列。
+	n.waitGroup.Wrap(n.queueScanLoop) //用于进行msg重试，作用对象是inflight队列和deferred队列。保证消息“至少投递一次” 是由这个goroutine中的queueScanWorker 不断的扫描 InFlightQueue 实现的。
 	//in-flight和deffered queue的。在具体的算法上的话参考了redis的随机过期算法。
 	n.waitGroup.Wrap(n.lookupLoop) //处理与nsqlookupd进程的交互。和lookupd建立长连接，每隔15s ping一下lookupd，新增或者删除topic的时候通知到lookupd，新增或者删除channel的时候通知到lookupd，动态的更新options
 	if n.getOpts().StatsdAddress != "" {  //如果配置了状态地址，开启状态协程
@@ -603,7 +603,7 @@ func (n *NSQD) channels() []*Channel {
 // 	1 <= pool <= min(num * 0.25, QueueScanWorkerPoolMax)
 //
 func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, closeCh chan int) {
-	idealPoolSize := int(float64(num) * 0.25) // 校验启动的worker数量，最大为nsqd的所有channel数 * 1/4,
+	idealPoolSize := int(float64(num) * 0.25) // 校验启动的worker数量，默认理想为nsqd的所有channel数 * 1/4,
 	if idealPoolSize < 1 {
 		idealPoolSize = 1
 	} else if idealPoolSize > n.getOpts().QueueScanWorkerPoolMax {
@@ -616,11 +616,14 @@ func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, c
 		if idealPoolSize == n.poolSize {
 			break
 		} else if idealPoolSize < n.poolSize {
-			// contract
+			// queueScanWorker 多了, 减少一个
+			// 利用 chan 的特性, 向closeCh 推一个消息, 这样 所有的 worCh 就会随机有一个收到这个消息（这是go chan本身的语言特性）, 然后关闭
+			// 细节: 这里跟 exitCh 的用法不同, exitCh 是要告知 "所有的" looper 退出, 所以使用的是 close(exitCh) 的用法
+			// 而如果想 让其中 一个 退出, 则使用 exitCh <- 1 的用法
 			closeCh <- 1
 			n.poolSize--
 		} else {
-			// expand
+			// queueScanWorker 少了, 增加一个
 			n.waitGroup.Wrap(func() {
 				n.queueScanWorker(workCh, responseCh, closeCh) //worker的具体实现是queueScanWorker
 			})
@@ -637,13 +640,17 @@ func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, close
 		case c := <-workCh:
 			now := time.Now().UnixNano()
 			dirty := false
-			if c.processInFlightQueue(now) {// 实现消息至少被投递一次
-				dirty = true
+			if c.processInFlightQueue(now) {// 实现消息至少被投递一次，目的就是把所有超时的消息再发一遍。
+				dirty = true //超时就是脏的
 			}
-			if c.processDeferredQueue(now) {// 实现延迟消息队列
+			if c.processDeferredQueue(now) {// 实现延迟消息队列，也是按超时的堆排序来进行的。
 				dirty = true
 			}
 			responseCh <- dirty // 如果有过期消息的存在，则dirty
+			//注意这个地方, 跟 之前的close(exitChan) 用法不同
+			//这里是启动多个worker, 然后当判断worker太多了, 需要关闭一个多余的worker时
+			//给 closeCh <- 1 发个消息, 利用golang chan 随机分发的特性
+			//这样就会随机的关闭掉一个 worker, 也就是随机退出一个 queueScanWorker 的 循环
 		case <-closeCh:
 			return
 		}
@@ -672,7 +679,7 @@ func (n *NSQD) queueScanLoop() {
 	refreshTicker := time.NewTicker(n.getOpts().QueueScanRefreshInterval)
 
 	channels := n.channels()
-	n.resizePool(len(channels), workCh, responseCh, closeCh)// 调整worker
+	n.resizePool(len(channels), workCh, responseCh, closeCh)// 调整worker，调整队列扫描任务的worker的数量
 
 	for {
 		select {

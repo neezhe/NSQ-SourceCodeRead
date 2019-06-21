@@ -33,7 +33,6 @@ type protocolV2 struct {
 	ctx *context
 }
 //IOLoop 里主要就是启动了两个线程, 一个处理订阅的消息的发送, 一个处理client 发过来的命令请求
-//V2协议大致为“  V2 command params\n”或“  V2 command params\r\n”
 func (p *protocolV2) IOLoop(conn net.Conn) error {
 	var err error
 	var line []byte
@@ -59,6 +58,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 		// 也就是说, 在这个时间里, 正常情况下, client肯定会在这个间隔内发一个心跳包过来
 		// read 不会因为client 本来就没消息而超时,
 		// 但是如果还是超时了, 那就肯定是 网络连接除了问题
+		//如果 2 个 _heartbeat_ 响应没有被应答， nsqd 将会超时，并且强制关闭客户端连接
 		if client.HeartbeatInterval > 0 {
 			client.SetReadDeadline(time.Now().Add(client.HeartbeatInterval * 2))
 		} else {
@@ -77,7 +77,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 			}
 			break
 		}
-		// 这个V2 版本的协议, 一行是一个命令
+		// 这个V2 版本的协议, 一行是一个命令，//V2协议大致为“  V2 command params\n”或“  V2 command params\r\n”
 		// trim the '\n'
 		line = line[:len(line)-1]
 		// optionally trim the '\r'， 处理一下\r, 有可能win版本的回车是 \r\n
@@ -121,7 +121,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 	}
 
 	p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(V2): [%s] exiting ioloop", client)
-	conn.Close()
+	conn.Close()//发现只有出错后才会跳出for循环
 	close(client.ExitChan)// 通知 messagePump 退出
 	if client.Channel != nil {
 		client.Channel.RemoveClient(client.ID)

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/nsqio/nsq/internal/lg"
-)
+	)
 
 type Options struct {
 	// basic options
@@ -84,14 +84,15 @@ type Options struct {
 }
 
 func NewOptions() *Options {
-	hostname, err := os.Hostname()
+	hostname, err := os.Hostname() //获得计算机的主机名
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	h := md5.New()
-	io.WriteString(h, hostname)
-	defaultID := int64(crc32.ChecksumIEEE(h.Sum(nil)) % 1024)
+	io.WriteString(h, hostname) //此处就是把hostname写到h这个writer的x元素中。
+
+	defaultID := int64(crc32.ChecksumIEEE(h.Sum(nil)) % 1024) //以主机名作为关键字,取得节点的hash值,关于一致性hash的讲解访问http://www.voidcn.com/article/p-udboaius-bps.html
 
 	return &Options{
 		ID:        defaultID,

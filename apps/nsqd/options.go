@@ -94,7 +94,7 @@ func (cfg config) Validate() {
 }
 //通过命令行参数，修改默认配置
 func nsqdFlagSet(opts *nsqd.Options) *flag.FlagSet {
-	flagSet := flag.NewFlagSet("nsqd", flag.ExitOnError)
+	flagSet := flag.NewFlagSet("nsqd", flag.ExitOnError) //第一个参数是可以任意定的.但第二个参数,则决定了参数解析出错时错误处理方式.
 
 	// basic options
 	flagSet.Bool("version", false, "print version string")

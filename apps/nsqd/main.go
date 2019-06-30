@@ -61,7 +61,7 @@ func (p *program) Start() error {
 	}
 	cfg.Validate() //验证配置是否合法，主要关于TLS的验证
 
-	options.Resolve(opts, flagSet, cfg)
+	options.Resolve(opts, flagSet, cfg)//要学习反射，把下面这个函数看懂就行了
 	nsqd, err := nsqd.New(opts)
 	if err != nil {
 		logFatal("failed to instantiate nsqd - %s", err)

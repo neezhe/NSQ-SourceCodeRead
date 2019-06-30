@@ -33,21 +33,25 @@ func newHTTPServer(ctx *Context) *httpServer {
 		router: router,
 	}
 	//Decorate是个装饰器，第一个参数为需要被装饰的视图函数，从第二参数开始，都是装饰函数，最后返回装饰好的视图函数
-	router.Handle("GET", "/ping", http_api.Decorate(s.pingHandler, log, http_api.PlainText))
-	router.Handle("GET", "/info", http_api.Decorate(s.doInfo, log, http_api.V1))
+	router.Handle("GET", "/ping", http_api.Decorate(s.pingHandler, log, http_api.PlainText)) //心跳检测，返回OK
+	router.Handle("GET", "/info", http_api.Decorate(s.doInfo, log, http_api.V1)) //获取版本信息
 
 	// v1 negotiate
 	router.Handle("GET", "/debug", http_api.Decorate(s.doDebug, log, http_api.V1))
-	router.Handle("GET", "/lookup", http_api.Decorate(s.doLookup, log, http_api.V1))
-	router.Handle("GET", "/topics", http_api.Decorate(s.doTopics, log, http_api.V1))
-	router.Handle("GET", "/channels", http_api.Decorate(s.doChannels, log, http_api.V1))
-	router.Handle("GET", "/nodes", http_api.Decorate(s.doNodes, log, http_api.V1))
+	router.Handle("GET", "/lookup", http_api.Decorate(s.doLookup, log, http_api.V1)) //返回某个topic下所有的producers
+	router.Handle("GET", "/topics", http_api.Decorate(s.doTopics, log, http_api.V1)) //获取所有的topic
+	router.Handle("GET", "/channels", http_api.Decorate(s.doChannels, log, http_api.V1)) //获取所有的channels
+	router.Handle("GET", "/nodes", http_api.Decorate(s.doNodes, log, http_api.V1)) //获取所有的节点
 
 	// only v1
-	router.Handle("POST", "/topic/create", http_api.Decorate(s.doCreateTopic, log, http_api.V1))
-	router.Handle("POST", "/topic/delete", http_api.Decorate(s.doDeleteTopic, log, http_api.V1))
-	router.Handle("POST", "/channel/create", http_api.Decorate(s.doCreateChannel, log, http_api.V1))
-	router.Handle("POST", "/channel/delete", http_api.Decorate(s.doDeleteChannel, log, http_api.V1))
+	//在创建channel的时候和创建topic的时候不一样，
+//channel注册的时候注册了两部分内容:
+//	1.根据channel构建一个key，注册channel和Producers的映射
+//	2. 再根据channel对应的topic构建一个key, 注册topic和Producers的映射
+	router.Handle("POST", "/topic/create", http_api.Decorate(s.doCreateTopic, log, http_api.V1))//创建topic， 这里只是创建topic而不会添加该topic的producer
+	router.Handle("POST", "/topic/delete", http_api.Decorate(s.doDeleteTopic, log, http_api.V1)) //删除topic
+	router.Handle("POST", "/channel/create", http_api.Decorate(s.doCreateChannel, log, http_api.V1)) //创建channel, 也不会添加producer
+	router.Handle("POST", "/channel/delete", http_api.Decorate(s.doDeleteChannel, log, http_api.V1))//删除channel
 	router.Handle("POST", "/topic/tombstone", http_api.Decorate(s.doTombstoneTopicProducer, log, http_api.V1))
 
 	// debug
@@ -104,27 +108,34 @@ func (s *httpServer) doChannels(w http.ResponseWriter, req *http.Request, ps htt
 		"channels": channels,
 	}, nil
 }
+//当完成了create topic/channel，完成了消费者register后，就开始下面lookup了
 //获取指定topic下的所有有效producer
 //当消费者需要查询某个topic在哪些nsqd上时，可以发送/lookup 的http命令查询，nsqlookupd的查询topic信息的接口是这样的：curl 'http://127.0.0.1:4161/lookup?topic=testtopic'
+//找到Channel对应的生产者Producers, 然后与这些Producers建立连接，订阅相关信息
+//lookup操作是根据Topic查询该topic底下的所有channel，和对应的producers。所以包含三个步骤:
+//1.根据Topic，看看是否已经注册了。如果没有注册抛出异常
+//2.否者将topic下的所有channel获取出来
+//3.获取该topic下的所有producers
 func (s *httpServer) doLookup(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
 	if err != nil {
 		return nil, http_api.Err{400, "INVALID_REQUEST"}
 	}
 
-	topicName, err := reqParams.Get("topic")
+	topicName, err := reqParams.Get("topic") //从url中拿到tpoic对应的值
 	if err != nil {
 		return nil, http_api.Err{400, "MISSING_ARG_TOPIC"}
 	}
-	//先查询map里面是否有对应topic的记录
+	// 1. 根据Topic，看看是否已经注册了。如果没有注册抛出异常
 	registration := s.ctx.nsqlookupd.DB.FindRegistrations("topic", topicName, "")
 	if len(registration) == 0 {//topic不存在
 		return nil, http_api.Err{404, "TOPIC_NOT_FOUND"}
 	}
-	//得到所有的channel列表
+	// 2. 将topic下的所有channel获取出来。*表示取出所有
 	channels := s.ctx.nsqlookupd.DB.FindRegistrations("channel", topicName, "*").SubKeys()
-	//得到 有这个topic的nsqd列表，后面需要去掉不活跃的机器
+	// 3. 获取该topic下的所有producers
 	producers := s.ctx.nsqlookupd.DB.FindProducers("topic", topicName, "")
+	//去掉不活跃的producer机器
 	producers = producers.FilterByActive(s.ctx.nsqlookupd.opts.InactiveProducerTimeout,
 		s.ctx.nsqlookupd.opts.TombstoneLifetime)
 	return map[string]interface{}{
@@ -155,7 +166,7 @@ func (s *httpServer) doCreateTopic(w http.ResponseWriter, req *http.Request, ps 
 
 	return nil, nil
 }
-
+//topic底下有多个channel，所有topic的删除首先需要删除channel，然后再删除topic
 func (s *httpServer) doDeleteTopic(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
 	if err != nil {
@@ -166,13 +177,13 @@ func (s *httpServer) doDeleteTopic(w http.ResponseWriter, req *http.Request, ps 
 	if err != nil {
 		return nil, http_api.Err{400, "MISSING_ARG_TOPIC"}
 	}
-	//先删除topic下的channel
+	// 先查找所有的channel注册并删除
 	registrations := s.ctx.nsqlookupd.DB.FindRegistrations("channel", topicName, "*")
 	for _, registration := range registrations {
 		s.ctx.nsqlookupd.logf(LOG_INFO, "DB: removing channel(%s) from topic(%s)", registration.SubKey, topicName)
 		s.ctx.nsqlookupd.DB.RemoveRegistration(registration)
 	}
-	//删除topic
+	//查询并删除topic
 	registrations = s.ctx.nsqlookupd.DB.FindRegistrations("topic", topicName, "")
 	for _, registration := range registrations {
 		s.ctx.nsqlookupd.logf(LOG_INFO, "DB: removing topic(%s)", topicName)
@@ -242,15 +253,15 @@ func (s *httpServer) doDeleteChannel(w http.ResponseWriter, req *http.Request, p
 	if err != nil {
 		return nil, http_api.Err{400, err.Error()}
 	}
-	//验证channel是否存在指定的topic下
+	//查询出所有的已经注册的registrations
 	registrations := s.ctx.nsqlookupd.DB.FindRegistrations("channel", topicName, channelName)
 	if len(registrations) == 0 {
 		return nil, http_api.Err{404, "CHANNEL_NOT_FOUND"}
 	}
 
 	s.ctx.nsqlookupd.logf(LOG_INFO, "DB: removing channel(%s) from topic(%s)", channelName, topicName)
-	for _, registration := range registrations {
-		s.ctx.nsqlookupd.DB.RemoveRegistration(registration)
+	for _, registration := range registrations { //根据这些key从registryMap中删除
+		s.ctx.nsqlookupd.DB.RemoveRegistration(registration) // 删除
 	}
 
 	return nil, nil

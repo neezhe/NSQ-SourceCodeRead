@@ -41,7 +41,7 @@ type Channel struct { //nsqd的channel是最接近消费者端的，有他特有
 // 有点类似于kafka的consumer_group，每个consumer_group拥有独立的position， 不同group之间可以消费同一份内容的多个副本。
 	//kafka的已经消费国的消息是可以继续保留的，而nsq则如果消费完了，就会删除掉
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
-	requeueCount uint64
+	requeueCount uint64 //维护了一些计数器
 	messageCount uint64
 	timeoutCount uint64
 
@@ -59,7 +59,7 @@ type Channel struct { //nsqd的channel是最接近消费者端的，有他特有
 	exitMutex     sync.RWMutex
 
 	// state tracking
-	clients        map[int64]Consumer //所有订阅的topic都会记录到这里, 用来在关闭的时候清理client，以及根据clientid找client
+	clients        map[int64]Consumer //所有订阅的topic都会记录到这里, 用来在关闭的时候清理client，以及根据clientid找client。维护了该channel所有的clients
 	paused         int32
 	ephemeral      bool
 	deleteCallback func(*Channel)//实际上就是DeleteExistingChannel
@@ -75,7 +75,7 @@ type Channel struct { //nsqd的channel是最接近消费者端的，有他特有
 	deferredMutex    sync.Mutex
 	//正在发送中的消息记录，直到收到客户端的FIN才会删除，否则timeout到来会重传消息的.
 	//这里应用层有个坑，如果程序处理延迟了，那么可能重复投递，那怎么办,应用层得注意这个，设置了timeout就得接受有重传的存在
-	inFlightMessages map[MessageID]*Message
+	inFlightMessages map[MessageID]*Message //已经发送给client但是没有得到client确认的消息,叫inFlightMessages。
 	inFlightPQ       inFlightPqueue
 	inFlightMutex    sync.Mutex
 }
@@ -411,9 +411,9 @@ func (c *Channel) RequeueMessage(clientID int64, id MessageID, timeout time.Dura
 
 // AddClient adds a client to the Channel's client list
 //SUB订阅消息仅限于TCP协议，客户端通过SUB命令订阅上来，最后调用cannnel.AddClient函数，
-// 函数很简单，就 在channel上记录了一下当前clientid，以备后面进行清理等使用
+// 函数很简单，就在channel上记录了一下当前clientid，以备后面进行清理等使用
 func (c *Channel) AddClient(clientID int64, client Consumer) error {
-	//sub命令触发到这里，在channel上面增加一个client
+	//sub命令触发到这里，在channel上面增加一个client。因为在channel中维护了一个client的map
 	c.Lock()
 	defer c.Unlock()
 
@@ -450,23 +450,22 @@ func (c *Channel) RemoveClient(clientID int64) {
 		go c.deleter.Do(func() { c.deleteCallback(c) })
 	}
 }
-//nsqd 对于消息的确认到达，是通过消费者发送FIN+msgid来实现的，可想而知，他需要一个队列记录：当前正在发送，待确认的消息列表，类似窗口协议，性能差点可能，这就是：InFlightQueue 。
-//发送客户端消息的时候，会调用StartInFlightTimeout来记录当前的infight消息，以备进行重传。如果客户端收到消息，会发送FIN 命令来结束消息倒计时，不用重传了。简单看看StartInFlightTimeout 代码。
+//nsqd对于消息的确认到达，是通过消费者发送FIN+msgid来实现的，可想而知，他需要一个队列记录：当前正在发送，待确认的消息列表，类似窗口协议，性能差点可能，这就是：InFlightQueue 。
+//发送客户端消息的时候，会调用StartInFlightTimeout来记录当前的infight消息，以备进行重传。如果客户端收到消息，会发送FIN命令来结束消息倒计时，不用重传了。简单看看StartInFlightTimeout代码。
 //这个函数会在客户端的protocolV2) messagePump 循环体里面，当某个客户端连接得到内存或者磁盘消息后，在发送前会设置这个inflight队列，
 // 用来记录当前正在发送的消息，如果超时时间到来还没有确认收到，那么会有queueScanLoop循环去扫描，并且重发这条消息,
 // 最后会调用到processInFlightQueue
+//此函数将消息加入到inflight队列中，这里只是将消息存入队列，那么在哪里消费呢？前面Nsqd在完成监听部分的初始化后，有四个自启动的goroutine，启动的n.queueScanLoop()就是用来执行消费的。
 func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout time.Duration) error {
 	now := time.Now()
-	//下面改clientID会不会有问题？不会，因为一个消息只可能给一个客户端，topic在发送消息到channel的时候
-	//第0个channel会复用当初的msg结构，之后的会创建一个新的
 	msg.clientID = clientID
 	msg.deliveryTS = now
-	msg.pri = now.Add(timeout).UnixNano()
-	err := c.pushInFlightMessage(msg)
+	msg.pri = now.Add(timeout).UnixNano()//初始化消息的过期时间为timeout+now,pri是优先级的缩写，此处就是按照过期的优先级进行堆排序存放的。
+	err := c.pushInFlightMessage(msg)//此处入队，processInFlightQueue处出队。
 	if err != nil {
 		return err
 	}
-	c.addToInFlightPQ(msg)
+	c.addToInFlightPQ(msg)//将msg加入到InFlight队列中，InFlight其实是一个堆排序队列，优先级是按照超时时间来排序的，越靠近过期时间，将会越靠前
 	return nil
 }
 //可以看到，对于延迟投递的消息最后就是用消息到达的时间戳来当优先级值，放入优先级队列。
@@ -601,9 +600,9 @@ func (c *Channel) processDeferredQueue(t int64) bool {
 exit:
 	return dirty
 }
-
+///把 InFlightQueue里,优先级小于参数t的,全部重新发送
 func (c *Channel) processInFlightQueue(t int64) bool {
-	c.exitMutex.RLock()
+	c.exitMutex.RLock() // 先检查是否已经退出
 	defer c.exitMutex.RUnlock()
 
 	if c.Exiting() {
@@ -613,15 +612,15 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 	dirty := false
 	for {
 		c.inFlightMutex.Lock()
-		msg, _ := c.inFlightPQ.PeekAndShift(t)
+		msg, _ := c.inFlightPQ.PeekAndShift(t) // 从队列中获取已经过期的消息
 		c.inFlightMutex.Unlock()
 
-		if msg == nil {
+		if msg == nil {//如果没有取到消息，那么就返回，仍然保持dirty := false
 			goto exit
 		}
 		dirty = true
 
-		_, err := c.popInFlightMessage(msg.clientID, msg.ID)
+		_, err := c.popInFlightMessage(msg.clientID, msg.ID) // 如果获取到了符合条件的msg，按msg.ID将msg在infight队列中删除
 		if err != nil {
 			goto exit
 		}
@@ -632,7 +631,7 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 		if ok {
 			client.TimedOutMessage()
 		}
-		c.put(msg)
+		c.put(msg)// 消息在channel中发起重新投递，重新塞入原始发送队列: channel.memoryMsgChan <- m
 	}
 
 exit:

@@ -8,36 +8,35 @@ import (
 )
 
 //registration_db.go文件用MAP以一对多的形式保存Producer，并提供一系列增、删、改、查的操作封装。同时使用RWMutex做并发控制。
-//一个topic对应多个Producer，即nsqd
+//一个topic对应多个Producer，为啥？因为一个topic和channel可能由多个producer发布。
 
 //定义类型RegistrationDB，字面意思：注册数据库，保存nsqd的注册信息
 //按照官网的quick start操作，查看终端输出，可发现nsqd每15秒通过4160端口向nsqlookupd发送心跳包
 //简单跟踪nsqlookupd/nsqlookupd.go中的protocol.TCPServer(tcpListener, tcpServer, l.opts.Logger)，可发现RegistrationDB保存nsqd的注册信息
 // RegistrationDB 以 map 结构包含了所有节点信息; 名为db, 实则最多算个cache罢了,但是实现了一系列的增删改查封装，同时使用RWMutex做并发控制。
 type RegistrationDB struct { //见有道笔记图解
-	sync.RWMutex
-	registrationMap map[Registration]ProducerMap //以 Registration 为 key 储存 Producers, 即生产者nsqd。把topic/channel和nsqdl关联起来。
+	sync.RWMutex  //读写锁，因为对Registration的增删改查可能多个线程在同时进行，所以需要加锁保证安全。
+	registrationMap map[Registration]ProducerMap //以 Registration 为 key 储存 Producers, 即生产者nsqd。把topic/channel和producer关联起来。
+	//这个key是怎么产生的？例如创建一个“aa”的topic,那么产生的key就为 Registration{"topic", “aa”, ""}
 }
-//nsqd首次注册时，Category:client Key: SubKey:
-//nsqd有topic时，Category:topic Key:test SubKey: Key为topic名称
 type Registration struct {
-	Category string
-	Key      string
-	SubKey   string
+	Category string // 这个用来指定key的类型，比如是topic或者channel
+	Key      string // 存放定义的topic值
+	SubKey   string // 如果是channel类型，存放channel值
 }
 type Registrations []Registration
 //通过curl 'http://127.0.0.1:4161/lookup?topic=topic_name'命令查看对应topic的信息
 type PeerInfo struct {
-	lastUpdate       int64
-	id               string
-	RemoteAddress    string `json:"remote_address"`
-	Hostname         string `json:"hostname"`
-	BroadcastAddress string `json:"broadcast_address"`
-	TCPPort          int    `json:"tcp_port"`
-	HTTPPort         int    `json:"http_port"`
-	Version          string `json:"version"`
+	lastUpdate       int64 //上次更新时间.
+	id               string // 唯一id表示这个Producer
+	RemoteAddress    string `json:"remote_address"` // 远程地址
+	Hostname         string `json:"hostname"` // 主机名字
+	BroadcastAddress string `json:"broadcast_address"`// 广播地址， 和远程地址区别？？
+	TCPPort          int    `json:"tcp_port"`// tcp端口
+	HTTPPort         int    `json:"http_port"` // http 端口
+	Version          string `json:"version"`// 版本，大概用来做版本兼容使用
 }
-//对于nsqlookupd来说，它的producer就是nsqd
+//对于nsqlookupd来说，它的producer就是nsqd，每个Producer代表一个生产者，存放该Producer的一些信息:
 type Producer struct {
 	peerInfo     *PeerInfo //// 节点信息
 	//是否删除，关于tombstones官网有介绍http://nsq.io/components/nsqlookupd.html#deletion_tombstones
@@ -49,7 +48,7 @@ type Producer struct {
 }
 //定义类型Producers为Producer的slice
 type Producers []*Producer
-type ProducerMap map[string]*Producer
+type ProducerMap map[string]*Producer //string是PeerInfo中的唯一标识符id
 
 func (p *Producer) String() string {
 	return fmt.Sprintf("%s [%d, %d]", p.peerInfo.BroadcastAddress, p.peerInfo.TCPPort, p.peerInfo.HTTPPort)
@@ -70,18 +69,22 @@ func NewRegistrationDB() *RegistrationDB {
 		registrationMap: make(map[Registration]ProducerMap), //make一个
 	}
 }
+//上面定义了注册表结构后，如何管理注册表，进行topic和channel的增删呢。
+// 本质上使用的就是map的增、删、查操作, 无非是先构建Registration类型的key, 根据key去操作。
+// 因为这个注册表可能多个操作同时在并行执行，为了保住线程安全，每个涉及到RegistrationDB.registrationMap的增、删、查操作都利用了RegistrationDB定义的读写锁进行加锁，
 // add a registration key
-//添加一个registration的key，只设置了map的key，value是一个空的Producers slice
-func (r *RegistrationDB) AddRegistration(k Registration) {
+//添加一个registration的key，只设置了map的key，value是一个空的Producers列表，后续添加Producer的工作则交给了AddProducer方法。
+//这个参数key是怎么产生的？例如创建一个“aa”的topic,那么产生的key就为 Registration{"topic", “aa”, ""}
+func (r *RegistrationDB) AddRegistration(k Registration) { //创建Topic和Chnnel是通过Http请求接口完成。通过http创建一个topic或channel.
 	//写锁
 	r.Lock()
 	defer r.Unlock()
-	_, ok := r.registrationMap[k]
+	_, ok := r.registrationMap[k] //是否已经创建了
 	if !ok {
 		r.registrationMap[k] = make(map[string]*Producer)
 	}
 }
-
+//通过http调用AddRegistration完成注册topic或channel后，下面tcp通过AddProducer来添加producer,负责将Producer添加到注册表中key对应的producers列表中
 // add a producer to a registration
 //就是对registrationMap 的查询，如果当前这个客户端以及在映射表里面就不需要处理，否则就加进去。
 func (r *RegistrationDB) AddProducer(k Registration, p *Producer) bool {
@@ -122,7 +125,7 @@ func (r *RegistrationDB) RemoveProducer(k Registration, id string) (bool, int) {
 
 	// Note: this leaves keys in the DB even if they have empty lists
 	//删除一个producer的方法，开始删除。
-	delete(producers, id)
+	delete(producers, id) //标准库函数，删除map中指定的key表示的项
 	//返回操作结果和cleaned slice长度
 	return removed, len(producers)
 }
@@ -130,7 +133,7 @@ func (r *RegistrationDB) RemoveProducer(k Registration, id string) (bool, int) {
 // remove a Registration and all it's producers
 //删除Registration和对应的producers
 func (r *RegistrationDB) RemoveRegistration(k Registration) {
-	r.Lock()
+	r.Lock() //为了保证数据的一致性，此处开始加锁
 	defer r.Unlock()
 	delete(r.registrationMap, k)
 }

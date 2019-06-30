@@ -7,7 +7,7 @@ import (
 )
 
 // Protocol describes the basic behavior of any protocol in the system
-type Protocol interface {
+type Protocol interface { //将协议封装, 方便以后不同协议的扩展
 	IOLoop(conn net.Conn) error
 }
 

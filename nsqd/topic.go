@@ -25,8 +25,8 @@ type Topic struct {
 
 	name              string
 	channelMap        map[string]*Channel //最主要的变量在于channelMap，这是这个topic的所有channel结构。
-	backend           BackendQueue //backend是对应的持久化磁盘存储的管道。
-	memoryMsgChan     chan *Message //memoryMsgChan 是这个topic对应的内存管道
+	backend           BackendQueue //backend是对应的持久化磁盘存储的队列。
+	memoryMsgChan     chan *Message //memoryMsgChan 是这个topic对应的内存队列
 	startChan         chan int
 	exitChan          chan int
 	channelUpdateChan chan int
@@ -47,7 +47,7 @@ type Topic struct {
 
 // Topic constructor
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
-	//初始化一个topic结构，并且设置其backend持久化结构，然后开启消息监听协程messagePump, 通知lookupd
+	//初始化一个topic结构，并且设置其backend持久化结构，然后开启消息监听协程messagePump,处理消息。
 	t := &Topic{
 		name:              topicName,
 		channelMap:        make(map[string]*Channel),
@@ -64,7 +64,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 	//HasPrefix检查字符串前缀开头，HasSuffix检查字符串后缀结尾。
 	if strings.HasSuffix(topicName, "#ephemeral") { //临时topic以#ephemeral开头，没有持久化机制，只放入内存中，所以其backend其实是个黑洞，直接丢掉
 		t.ephemeral = true
-		t.backend = newDummyBackendQueue()
+		t.backend = newDummyBackendQueue()//生成一个go chan
 	} else {
 		//正常的topic，需要设置其log函数，以及最重要的，backend持久化机制
 		dqLogf := func(level diskqueue.LogLevel, f string, args ...interface{}) {
@@ -186,7 +186,7 @@ func (t *Topic) DeleteExistingChannel(channelName string) error {
 func (t *Topic) PutMessage(m *Message) error {
 	t.RLock()
 	defer t.RUnlock()
-	//简单看一下是不是我们正在退出状态，如果是就直接返回
+	//简单看一下是不是我们正在退出状态，如果是就直接返回。这里使用了一个atomic Int32类型的exitFlag退出标志。
 	if atomic.LoadInt32(&t.exitFlag) == 1 {
 		return errors.New("exiting")
 	}
@@ -197,8 +197,8 @@ func (t *Topic) PutMessage(m *Message) error {
 	if err != nil {
 		return err
 	}
-	atomic.AddUint64(&t.messageCount, 1)
-	atomic.AddUint64(&t.messageBytes, uint64(len(m.Body)))
+	atomic.AddUint64(&t.messageCount, 1) //消息计数
+	atomic.AddUint64(&t.messageBytes, uint64(len(m.Body))) //记录消息长度
 	return nil
 }
 
@@ -230,12 +230,15 @@ func (t *Topic) PutMessages(msgs []*Message) error {
 //这里memoryMsgChan的大小我们可以通过--mem-queue-size参数来设置，上面这段代码的流程是如果memoryMsgChan还没有满的话
 //就把消息放到memoryMsgChan中，否则就放到backend(disk)中。topic的mesasgePump检测到有新的消息写入的时候就开始工作了，
 func (t *Topic) put(m *Message) error {
+	// 这里巧妙利用了 chan 的特性
+	// 先写入memoryMsgChan这个队列,假如 memoryMsgChan已满, 不可写入
+	// golang 就会执行 default 语句,
 	select {
 	case t.memoryMsgChan <- m: //将这条消息直接塞入内存管道
 	default: //如果内存消息管道满了(memoryMsgChan的容量由 getOpts().MemQueueSize设置)，那么就放入到后面的持久化存储里面
-		b := bufferPoolGet()
+		b := bufferPoolGet() // 复用buffer，减少对象生成，阅读一下sync.Pool包
 		err := writeMessageToBackend(b, m, t.backend) //backend是创建topic的时候建立的diskqueue
-		bufferPoolPut(b)
+		bufferPoolPut(b)// 放回缓存池
 		t.ctx.nsqd.SetHealth(err)
 		if err != nil {
 			t.ctx.nsqd.logf(LOG_ERROR,
@@ -253,7 +256,8 @@ func (t *Topic) Depth() int64 {
 
 // messagePump selects over the in-memory and backend queue and
 // writes messages to every channel for this topic
-//主要就是订阅了内存和磁盘队列消息，这样在“topic.PutMessage 到 topic.memoryMsgChan”之后，下面的select就会检测到有消息到来
+//下面的select就会检测到有消息到来
+//主要是接收来自backend和memoryMsgChan的消息，然后转发给每一个channel
 func (t *Topic) messagePump() {
 	var msg *Message
 	var buf []byte
@@ -276,14 +280,14 @@ func (t *Topic) messagePump() {
 		}
 		break
 	}
-	t.RLock()
-	for _, c := range t.channelMap {  //拿到这个topic的所有channel
+	t.RLock()//避免锁竞争, 所以缓存已存在的 channel
+	for _, c := range t.channelMap {  //拿到这个topic的所有channel,多线程中遍历类中一个成员变量的操作, 需要给 类加锁
 		chans = append(chans, c)
 	}
 	t.RUnlock()
 	if len(chans) > 0 && !t.IsPaused() { //topic的mesasgePump检测到有新的消息写入的时候就开始工作了，
 		//从memoryMsgChan/backend(disk)读取消息投递到channel对应的chan中。前者是有缓冲的后者没有。
-		memoryMsgChan = t.memoryMsgChan //是PutMessage在源源不断的向memoryMsgChan中写数据，memoryMsgChan是在NewTopic的时候设置的大小
+		memoryMsgChan = t.memoryMsgChan //是topic.PutMessage在源源不断的向memoryMsgChan中写数据，memoryMsgChan是在NewTopic的时候设置的大小
 		backendChan = t.backend.ReadChan() //下面要从DiskQueue.ReadChan中取消息，在new一个diskqueue的时候会把从文件中读取信息到readChan
 	}
 
@@ -299,7 +303,9 @@ func (t *Topic) messagePump() {
 				t.ctx.nsqd.logf(LOG_ERROR, "failed to decode message - %s", err)
 				continue
 			}
-		case <-t.channelUpdateChan:
+		case <-t.channelUpdateChan: //只在更新的时候才加锁获取channel,这样就避免了一次循环就加锁获取的低效操作。
+			//上面避免锁竞争, 缓存了这个topic已存在的所有channel
+			//假如更新channel，会发一个 消息过来,重新读取 channel
 			chans = chans[:0]
 			t.RLock()
 			for _, c := range t.channelMap {
@@ -328,9 +334,9 @@ func (t *Topic) messagePump() {
 		}
 		// 3. 往该tpoic对应的每个channel写入message(如果是deffermessage
 		// 的话放到对应的deffer queue中，否则放到该channel对应的memoryMsgChan中)。
-		for i, channel := range chans { //遍历每个channel,然后将消息一个个发送到channel的流程里面
+		for i, channel := range chans { //遍历每个channel,然后将消息一个个发送到channel的流程里面.看到没，此处就是将一条topic的消息多播到多有的channel,然后消费者通过订阅的channel读取，如果一个channel上面有多个consumer，则随机。
 			//到这里只有一种可能，有新消息来了, 那么遍历channel，调用PutMessage发送消息
-			chanMsg := msg
+			chanMsg := msg //为啥要拷贝？
 			// copy the message because each channel
 			// needs a unique instance but...
 			// fastpath to avoid copy if its the first channel

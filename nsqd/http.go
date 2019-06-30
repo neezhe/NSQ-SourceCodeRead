@@ -54,19 +54,19 @@ func newHTTPServer(ctx *context, tlsEnabled bool, tlsRequired bool) *httpServer 
 	}
 
 	router.Handle("GET", "/ping", http_api.Decorate(s.pingHandler, log, http_api.PlainText))
-	router.Handle("GET", "/info", http_api.Decorate(s.doInfo, log, http_api.V1))
+	router.Handle("GET", "/info", http_api.Decorate(s.doInfo, log, http_api.V1)) //版本
 
 	// v1 negotiate
 	router.Handle("POST", "/pub", http_api.Decorate(s.doPUB, http_api.V1))
-	router.Handle("POST", "/mpub", http_api.Decorate(s.doMPUB, http_api.V1))
-	router.Handle("GET", "/stats", http_api.Decorate(s.doStats, log, http_api.V1))
+	router.Handle("POST", "/mpub", http_api.Decorate(s.doMPUB, http_api.V1)) //发布多个消息到话题
+	router.Handle("GET", "/stats", http_api.Decorate(s.doStats, log, http_api.V1)) //检查综合运行
 
 	// only v1
 	router.Handle("POST", "/topic/create", http_api.Decorate(s.doCreateTopic, log, http_api.V1))
 	router.Handle("POST", "/topic/delete", http_api.Decorate(s.doDeleteTopic, log, http_api.V1))
-	router.Handle("POST", "/topic/empty", http_api.Decorate(s.doEmptyTopic, log, http_api.V1))
-	router.Handle("POST", "/topic/pause", http_api.Decorate(s.doPauseTopic, log, http_api.V1))
-	router.Handle("POST", "/topic/unpause", http_api.Decorate(s.doPauseTopic, log, http_api.V1))
+	router.Handle("POST", "/topic/empty", http_api.Decorate(s.doEmptyTopic, log, http_api.V1))//清空话题（topic)
+	router.Handle("POST", "/topic/pause", http_api.Decorate(s.doPauseTopic, log, http_api.V1))//暂停话题（topic)的消息流
+	router.Handle("POST", "/topic/unpause", http_api.Decorate(s.doPauseTopic, log, http_api.V1))//恢复话题（topic)的消息流
 	router.Handle("POST", "/channel/create", http_api.Decorate(s.doCreateChannel, log, http_api.V1))
 	router.Handle("POST", "/channel/delete", http_api.Decorate(s.doDeleteChannel, log, http_api.V1))
 	router.Handle("POST", "/channel/empty", http_api.Decorate(s.doEmptyChannel, log, http_api.V1))
@@ -76,16 +76,16 @@ func newHTTPServer(ctx *context, tlsEnabled bool, tlsRequired bool) *httpServer 
 	router.Handle("PUT", "/config/:opt", http_api.Decorate(s.doConfig, log, http_api.V1))
 
 	// debug
-	router.HandlerFunc("GET", "/debug/pprof/", pprof.Index)
+	router.HandlerFunc("GET", "/debug/pprof/", pprof.Index) //pprof 调试入口
 	router.HandlerFunc("GET", "/debug/pprof/cmdline", pprof.Cmdline)
 	router.HandlerFunc("GET", "/debug/pprof/symbol", pprof.Symbol)
 	router.HandlerFunc("POST", "/debug/pprof/symbol", pprof.Symbol)
-	router.HandlerFunc("GET", "/debug/pprof/profile", pprof.Profile)
-	router.Handler("GET", "/debug/pprof/heap", pprof.Handler("heap"))
-	router.Handler("GET", "/debug/pprof/goroutine", pprof.Handler("goroutine"))
-	router.Handler("GET", "/debug/pprof/block", pprof.Handler("block"))
+	router.HandlerFunc("GET", "/debug/pprof/profile", pprof.Profile) // 生成 pprof CPU 配置文件
+	router.Handler("GET", "/debug/pprof/heap", pprof.Handler("heap")) //生成 pprof 堆配置文件
+	router.Handler("GET", "/debug/pprof/goroutine", pprof.Handler("goroutine")) //生成 pprof 计算配置文件
+	router.Handler("GET", "/debug/pprof/block", pprof.Handler("block")) //生成 pprof 块配置文件
 	router.Handle("PUT", "/debug/setblockrate", http_api.Decorate(setBlockRateHandler, log, http_api.PlainText))
-	router.Handler("GET", "/debug/pprof/threadcreate", pprof.Handler("threadcreate"))
+	router.Handler("GET", "/debug/pprof/threadcreate", pprof.Handler("threadcreate")) //生成 pprof OS 线程配置文件
 
 	return s
 }
@@ -208,7 +208,7 @@ func (s *httpServer) doPUB(w http.ResponseWriter, req *http.Request, ps httprout
 	}
 	//1.看有没有topic，有则返回
 	//无则创建topic，并通知lookup，创建完后通知此topic的messagePump跑起来
-	reqParams, topic, err := s.getTopicFromQuery(req) //首先要从http query中拿到topi
+	reqParams, topic, err := s.getTopicFromQuery(req) //首先要从http query中拿到topic
 	if err != nil {
 		return nil, err
 	}

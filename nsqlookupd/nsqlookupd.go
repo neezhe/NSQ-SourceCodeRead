@@ -12,8 +12,9 @@ import (
 	"github.com/nsqio/nsq/internal/util"
 	"github.com/nsqio/nsq/internal/version"
 )
-
-type NSQLookupd struct {
+//nsqlookup的主要任务是负责注册和管理各个客户端，管理客户端与topic、Channel之间的关系。为了维护这种关系，
+// 在nsqlookup内部提供了一张注册表，这张注册表使用RegistrationDB结构来实现。
+type NSQLookupd struct {//表示了nsqlookupd服务实例，完成了http和tcp的监听和启动，初始化并维护了registrationMap注册表。所以这个结构体的元素就有如下这些。
 	//读写互斥锁应用举例 https://golang.org/pkg/sync/#RWMutex
 	//http://blog.csdn.net/aslackers/article/details/62044726
 	/**
@@ -26,7 +27,7 @@ type NSQLookupd struct {
 	tcpListener  net.Listener //记录监听的文件描述符
 	httpListener net.Listener
 	waitGroup    util.WaitGroupWrapper //很重要，在文件internal/util/wait_group_wrapper.go中定义，与sync.WaitGroup相关，用于同步
-	DB           *RegistrationDB //在文件nsqlookupd/registration_db.go中定义，与数据存储有关
+	DB           *RegistrationDB //注册数据库，存放着topic和producer的映射关系注册表
 }
 //根据配置的nsqlookupd options信息，创建一个NSQLookupd实例
 func New(opts *Options) (*NSQLookupd, error) {
@@ -102,6 +103,8 @@ func (l *NSQLookupd) RealHTTPAddr() *net.TCPAddr {
 }
 //退出nsqloopupd进程，关闭两个Listener，等待TCP和HTTP线程都关闭了，才关闭自身
 func (l *NSQLookupd) Exit() {
+	//Close 之后, listener.Accept() 就会返回error,
+	//从而退出循环, 主线程退出后通过此方法通知TCPServer线程退出。
 	if l.tcpListener != nil {
 		l.tcpListener.Close()
 	}
@@ -109,5 +112,5 @@ func (l *NSQLookupd) Exit() {
 	if l.httpListener != nil {
 		l.httpListener.Close()
 	}
-	l.waitGroup.Wait() //waitGroup.Wrap修饰的函数都是几个重要的函数，所以此处需要通过同步来控制。
+	l.waitGroup.Wait() //waitGroup.Wrap修饰的函数都是几个重要的routine，所以当main主routine退出后，要等待其他routine优雅的退出后才行。
 }

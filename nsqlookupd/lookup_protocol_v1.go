@@ -82,14 +82,14 @@ func (p *LookupProtocolV1) IOLoop(conn net.Conn) error {
 	return err
 }
 
+//由下面的代码可见lookupd的TCP支持4个命令。
 //当客户端初始化完后，首先发送IDENTIFY操作，辨认身份，再发送REGISTER 注册一个Registration category:client key: subkey:
-//如果客户端新增一个topic，发送REGISTER，注册这个topic
-//如果客户端删除一个topic，发送UNREGISTER，注销即删除这个注册信息
+//如果客户端新增一个topic和channel，发送REGISTER，注册这个topic
+//如果客户端删除一个topic或chennel，发送UNREGISTER，注销即删除这个注册信息
 //TODO 客户端新增或删除channel时，是否调用REGISTER UNREGISTER操作，待确认
-//客户端每15秒发送一个PING操作
 func (p *LookupProtocolV1) Exec(client *ClientV1, reader *bufio.Reader, params []string) ([]byte, error) {
 	switch params[0] {
-	case "PING":  //nsqd每隔一段时间都会向nsqlookupd发送心跳，表明自己还活着；
+	case "PING":  //nsqd每隔15s都会向nsqlookupd发送心跳，表明自己还活着；
 		return p.PING(client, params)
 	case "IDENTIFY": //当nsqd第一次连接nsqlookupd时，发送IDENTITY，验证自己身份；
 		return p.IDENTIFY(client, reader, params[1:])
@@ -114,7 +114,7 @@ func getTopicChan(command string, params []string) (string, string, error) {
 		channelName = params[1]
 	}
 
-	if !protocol.IsValidTopicName(topicName) {
+	if !protocol.IsValidTopicName(topicName) { //看这个字符串的书写是否合规范
 		return "", "", protocol.NewFatalClientErr(nil, "E_BAD_TOPIC", fmt.Sprintf("%s topic name '%s' is not valid", command, topicName))
 	}
 
@@ -124,8 +124,7 @@ func getTopicChan(command string, params []string) (string, string, error) {
 
 	return topicName, channelName, nil
 }
-//client新建topic时，执行REGISTER操作，注册信息
-//TODO client新建channel时，是否执行REGISTER，待确认
+//通过http完成了AddRegistration后即完成了create tpoic或Create channel后，现在通过tcp执行REGISTER操作，注册信息
 func (p *LookupProtocolV1) REGISTER(client *ClientV1, reader *bufio.Reader, params []string) ([]byte, error) {
 	if client.peerInfo == nil {//必须先执行IDENTIFY操作
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "client must IDENTIFY")
@@ -140,7 +139,7 @@ func (p *LookupProtocolV1) REGISTER(client *ClientV1, reader *bufio.Reader, para
 	//如果有channel，需要单独记录一下channel，因为topic和channel可以1:n的
 	if channel != "" {
 		key := Registration{"channel", topic, channel}
-		//调用AddProducer 将映射关系放入map里面
+		//把channel和producer关联起来。
 		if p.ctx.nsqlookupd.DB.AddProducer(key, &Producer{peerInfo: client.peerInfo}) {
 			p.ctx.nsqlookupd.logf(LOG_INFO, "DB: client(%s) REGISTER category:%s key:%s subkey:%s",
 				client, "channel", topic, channel)
@@ -155,7 +154,10 @@ func (p *LookupProtocolV1) REGISTER(client *ClientV1, reader *bufio.Reader, para
 
 	return []byte("OK"), nil
 }
-
+//从注册表指定的topic或channel中移除producer, 为什么使用tcp方式的UNREGISTER命令完成？(因为tcp方式保持了客户端的信息)。
+//1.首先构建key
+//2.根据key去注册表中查询该key下的所有producers
+//3.for循序遍历producers，如果producers的id与当前客户端的id一致，则移除
 func (p *LookupProtocolV1) UNREGISTER(client *ClientV1, reader *bufio.Reader, params []string) ([]byte, error) {
 	if client.peerInfo == nil {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "client must IDENTIFY")
@@ -166,7 +168,7 @@ func (p *LookupProtocolV1) UNREGISTER(client *ClientV1, reader *bufio.Reader, pa
 		return nil, err
 	}
 
-	if channel != "" {
+	if channel != "" { //如果传入的参数指定了channel
 		key := Registration{"channel", topic, channel}
 		removed, left := p.ctx.nsqlookupd.DB.RemoveProducer(key, client.peerInfo.id)
 		if removed {
@@ -177,7 +179,7 @@ func (p *LookupProtocolV1) UNREGISTER(client *ClientV1, reader *bufio.Reader, pa
 		if left == 0 && strings.HasSuffix(channel, "#ephemeral") {
 			p.ctx.nsqlookupd.DB.RemoveRegistration(key)
 		}
-	} else {
+	} else { ////如果传入的参数指定了topic,没有指定channel
 		// no channel was specified so this is a topic unregistration
 		// remove all of the channel registrations...
 		// normally this shouldn't happen which is why we print a warning message

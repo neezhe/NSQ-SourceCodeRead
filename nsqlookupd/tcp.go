@@ -31,10 +31,10 @@ func (p *tcpServer) Handle(clientConn net.Conn) {
 //nsq协议有默认(其实就是v0)和v1，因此代码有根据协议的版本执行不同的代码；我们以协议v1为例；
 //这个Handle方法最后调用了LookupProtocolV1.IOLoop方法；由名字可以看出这个IOLoop函数是一个循环
 	var prot protocol.Protocol
-	switch protocolMagic {
+	switch protocolMagic { //消息的前4个字节是存放客户端的版本，也叫做协议的魔数protocolMagic,根据这个protocolMagic选择对应的该版本处理方式。目前只支持“ V1”.这个设计是为了版本兼容，由不同的版本，在下面开个case就行了。
 	case "  V1":  //连接之后，客户端会发送一个4字节的头部来表示版本，这个方法事NSQ约定的，而非TCP协议本身的。见https://nsq.io/clients/tcp_protocol_spec.html
 		prot = &LookupProtocolV1{ctx: p.ctx}
-	default://如果不是"  V1"协议，则断开链接，打印错误信息，返回
+	default://如果不是"  V1"协议，则断开链接，打印错误信息，返回E_BAD_PROTOCOL
 		protocol.SendResponse(clientConn, []byte("E_BAD_PROTOCOL"))
 		clientConn.Close()
 		p.ctx.nsqlookupd.logf(LOG_ERROR, "client(%s) bad protocol magic '%s'",

@@ -32,7 +32,7 @@ var okBytes = []byte("OK")
 type protocolV2 struct {
 	ctx *context
 }
-//V2协议大致为“  V2 command params\n”或“  V2 command params\r\n”
+//IOLoop 里主要就是启动了两个线程, 一个处理订阅的消息的发送, 一个处理client 发过来的命令请求
 func (p *protocolV2) IOLoop(conn net.Conn) error {
 	var err error
 	var line []byte
@@ -50,13 +50,19 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 	//上面注释说了，这里做同步的原因在于，需要确保messagePump里面的初始化完成，再进行下面的操作，
 	//因为当前客户端在后面可能修改相关的数据。消息的订阅发布工作在辅助的messagePump携程处理，下面创建
 	messagePumpStartedChan := make(chan bool)
-	go p.messagePump(client, messagePumpStartedChan)
+	go p.messagePump(client, messagePumpStartedChan)//从该client订阅的channel中读取消息并发送给consumer（通过SendMessage），这个操作的上游就是tpoic的messagePump把消息放入channel
 	<-messagePumpStartedChan //为空的时候会阻塞在此处。
-	//开始循环读取客户端请求然后解析参数，进行处理, 这个工作在客户端的主协程处理
+	//下面开始处理client请求，开始循环读取客户端请求然后解析参数，进行处理, 这个工作在客户端的主协程处理
 	for {
+		// 如果 client 设置需要做心跳检查, 则设置 读超时为 两倍 心跳检查间隔
+		// 也就是说, 在这个时间里, 正常情况下, client肯定会在这个间隔内发一个心跳包过来
+		// read 不会因为client 本来就没消息而超时,
+		// 但是如果还是超时了, 那就肯定是 网络连接除了问题
+		//如果 2 个 _heartbeat_ 响应没有被应答， nsqd 将会超时，并且强制关闭客户端连接
 		if client.HeartbeatInterval > 0 {
 			client.SetReadDeadline(time.Now().Add(client.HeartbeatInterval * 2))
 		} else {
+			// 加入client 不设置做心跳则不设置读超时
 			client.SetReadDeadline(zeroTime)
 		}
 
@@ -71,13 +77,14 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 			}
 			break
 		}
-
+		// 这个V2 版本的协议, 一行是一个命令，//V2协议大致为“  V2 command params\n”或“  V2 command params\r\n”
 		// trim the '\n'
 		line = line[:len(line)-1]
-		// optionally trim the '\r'
+		// optionally trim the '\r'， 处理一下\r, 有可能win版本的回车是 \r\n
 		if len(line) > 0 && line[len(line)-1] == '\r' {
 			line = line[:len(line)-1]
 		}
+		// 每个命令, 用空格来划分参数
 		params := bytes.Split(line, separatorBytes)
 
 		p.ctx.nsqd.logf(LOG_DEBUG, "PROTOCOL(V2): [%s] %s", client, params)
@@ -103,7 +110,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 			}
 			continue
 		}
-
+		// 假如命令是有 '响应' 的, 发送响应
 		if response != nil {
 			err = p.Send(client, frameTypeResponse, response)
 			if err != nil {
@@ -114,8 +121,8 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 	}
 
 	p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(V2): [%s] exiting ioloop", client)
-	conn.Close()
-	close(client.ExitChan)
+	conn.Close()//发现只有出错后才会跳出for循环
+	close(client.ExitChan)// 通知 messagePump 退出
 	if client.Channel != nil {
 		client.Channel.RemoveClient(client.ID)
 	}
@@ -142,7 +149,7 @@ func (p *protocolV2) SendMessage(client *clientV2, msg *Message) error {
 }
 
 func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error {
-	client.writeLock.Lock()
+	client.writeLock.Lock()// 因为client的处理还有一个 messagePump线程, 所以发送要锁
 
 	var zeroTime time.Time
 	if client.HeartbeatInterval > 0 {
@@ -150,7 +157,9 @@ func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error 
 	} else {
 		client.SetWriteDeadline(zeroTime)
 	}
-
+	//V2协议版本发送给client, 是使用[(4byte)消息长度 , (4byte)消息类型, (载体)] 的 帧格式
+	//但是为什么这个格式的封装不写在 protocal_v2.go 而是在protocaol定义上?
+	//个人觉得, 具体封包格式的 '具体实现' 应该在 '协议的具体实现'里, 也就是 protocal_v2,而不是 '协议的定义' 里
 	_, err := protocol.SendFramedResponse(client.Writer, frameType, data)
 	if err != nil {
 		client.writeLock.Unlock()
@@ -167,14 +176,15 @@ func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error 
 }
 
 func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
-	if bytes.Equal(params[0], []byte("IDENTIFY")) {
+	if bytes.Equal(params[0], []byte("IDENTIFY")) {//这个命令不需要做认证
 		return p.IDENTIFY(client, params)
 	}
-	err := enforceTLSPolicy(client, p, params[0])
+	err := enforceTLSPolicy(client, p, params[0])// client是否做了认证
 	if err != nil {
 		return nil, err
 	}
 	switch {
+	//当一个客户端成功接收到msg 并处理完成, 按照协议会向nsqd 发送一个 "FIN" 命令通知nsqd, 这时候nsqd 会将这条msg 从InFlight队列中删除
 	case bytes.Equal(params[0], []byte("FIN")): //消费者收到msgid后，发送FIN+msgid通知服务器成功投递消息，可以清空消息了
 		return p.FIN(client, params)
 	case bytes.Equal(params[0], []byte("RDY")):
@@ -201,7 +211,12 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, protocol.NewFatalClientErr(nil, "E_INVALID", fmt.Sprintf("invalid command %s", params[0]))
 }
 
-func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
+//1. nsqd每个连接上来的客户端会创建一个protocolV2.messagePump协程负责订阅消息（这个协程也在IOLoop被开启），做超时处理；
+//2. 客户端发送SUB命令后，SUB()函数会通知客户端的messagePump携程去订阅这个channel的消息；
+//3. messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
+//4. 只要有生产者发送消息后，channel.memoryMsgChan便会有新的消息到来，其中一个客户端就能获得管道的消息；
+//5. 拿到消息后调用StartInFlightTimeout将消息放到队列，用来做超时重传，然后调用SendMessage发送给客户端 ；
+func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pump就是水泵的意思，就是把消息抽出来发给client
 	var err error
 	var memoryMsgChan chan *Message
 	var backendMsgChan chan []byte
@@ -212,10 +227,10 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 	var flusherChan <-chan time.Time
 	var sampleRate int32
 
-	subEventChan := client.SubEventChan//subEventChan是客户端有订阅行为的通知channel，订阅一次后会重置为null。
+	subEventChan := client.SubEventChan//subEventChan是客户端有订阅行为的通知channel，订阅一次后会重置为null。这个地方直接这样赋值，后面从subEventChan拿值也会清空client.SubEventChan
 	identifyEventChan := client.IdentifyEventChan
 	outputBufferTicker := time.NewTicker(client.OutputBufferTimeout)
-	heartbeatTicker := time.NewTicker(client.HeartbeatInterval)
+	heartbeatTicker := time.NewTicker(client.HeartbeatInterval) //设置和客户端的心跳定时器
 	heartbeatChan := heartbeatTicker.C
 	msgTimeout := client.MsgTimeout
 
@@ -230,11 +245,11 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 	// signal to the goroutine that started the messagePump
 	// that we've started up
 	close(startedChan)
-
-	for {
-		if subChannel == nil || !client.IsReadyForMessages() {
+    //开始处理client请求
+	for { //每次select中的chan有值都会跑一次for循环，每次循环都会跑一下此处的if语句。
+		if subChannel == nil || !client.IsReadyForMessages() {//第一次进入到此messagePump函数中时，会进入到此if语句，因为subChannel == nil
 			// the client is not ready to receive messages...
-			memoryMsgChan = nil
+			memoryMsgChan = nil//当客户端订阅的channel还未创建完毕时，或者没有准备好时，与该channel相关联的用于接收消息的内存消息队列和磁盘消息队列都会被置位空，进而不会接收到任何消息。
 			backendMsgChan = nil
 			flusherChan = nil
 			// force flush
@@ -245,7 +260,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 				goto exit
 			}
 			flushed = true
-		} else if flushed {
+		} else if flushed { //注意就算前个if语句中flushed被置为true,也不会进去到此处
 			// last iteration we flushed...
 			// do not select on the flusher ticker channel
 			memoryMsgChan = subChannel.memoryMsgChan
@@ -254,13 +269,13 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 		} else {
 			// we're buffered (if there isn't any more data we should flush)...
 			// select on the flusher ticker channel, too
-			memoryMsgChan = subChannel.memoryMsgChan
+			memoryMsgChan = subChannel.memoryMsgChan  //messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
 			backendMsgChan = subChannel.backend.ReadChan()
 			flusherChan = outputBufferTicker.C
 		}
 
-		select {
-		case <-flusherChan:
+		select {// 这里负责执行Client 的各种事件
+		case <-flusherChan: //定时chan
 			// if this case wins, we're either starved
 			// or we won the race between other channels...
 			// in either case, force flush
@@ -271,12 +286,10 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 				goto exit
 			}
 			flushed = true
-		case <-client.ReadyStateChan:
-		case subChannel = <-subEventChan:
-			//当客户端发送了SUB操作后，会通过这个管道，塞入我所应该订阅的topic，然后这里就得到了对应应该订阅的channel，
+		case <-client.ReadyStateChan: //这个case下面没有什么要处理的，目的就是解除阻塞，进行for循环上面的if语句判断。
+		case subChannel = <-subEventChan://subChannel是有用的，在下面被用到，subChannel就是订阅Chnanel,Client需要发送一个SUB请求来订阅Channel,并且一个Client只能订阅一个Channel
+			//当客户端发送了SUB操作后，通知此后台消息循环协程：你需要订阅一个新的channel并且关注其事件。
 			//然后就在上面的循环中设置对应的memoryMsgChan 或者backend.ReadChan() 进行监听
-			//所以nsq是通过前台跟客户端交互协程通知后台消息循环协程，你需要订阅一个新的channel并且关注其事件。 这么来订阅的
-			// you can't SUB anymore
 			subEventChan = nil
 		case identifyData := <-identifyEventChan:
 			// you can't IDENTIFY anymore
@@ -299,7 +312,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 			}
 
 			msgTimeout = identifyData.MsgTimeout
-		case <-heartbeatChan:
+		case <-heartbeatChan: //由于有定时器在，所以此for循环不会出现all goroutine are asleep的错误。
 			err = p.Send(client, frameTypeResponse, heartbeatBytes)
 			if err != nil {
 				goto exit
@@ -316,6 +329,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 				continue
 			}
 			msg.Attempts++
+			//subChannel就是要发送消息的channel
 			//inflight功能用来保证消息的一次到达，所有发送给客户端，但是没收到FIN确认的消息都放到这里面：
 			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout)//监听这个channel的请求，如果有消息到来，被触发后发送给客户端
 			client.SendingMessage()
@@ -329,10 +343,11 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) {
 				continue
 			}
 			msg.Attempts++
-
+			// 填充消息的消费者ID、投送时间、优先级，然后调用pushInFlightMessage函数将消息放入inFlightMessages字典中。最后调用addToInFlightPQ将消息放入inFlightPQ队列中。
+			// 至此，消息投递流程完成，接下来需要等待消费者对投送结果的反馈。消费者通过发送FIN、REQ、TOUCH来回复对消息的处理结果。
 			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout) //监听这个channel的请求，如果有消息到来，被触发后发送给客户端
 			client.SendingMessage()
-			err = p.SendMessage(client, msg)
+			err = p.SendMessage(client, msg) //很奇怪，既然此处已经发送到客户端，那为什么上面StartInFlightTimeout还需要将此消息加入到inflight队列中？因为inFlight队列是NSQ用来实现消息至少投递一次的
 			if err != nil {
 				goto exit
 			}
@@ -584,7 +599,7 @@ func (p *protocolV2) CheckAuth(client *clientV2, cmd, topicName, channelName str
 	}
 	return nil
 }
-//消费者使用TCP协议，发送SUB topic channel 命令订阅到某个channel上，记录其client.Channel = channel，通知c.SubEventChan
+//消费者使用TCP协议，发送SUB topic channel命令订阅某个channel，NSQD会获取需要订阅的topic和channel，然后将client添加到相应的channel中，通知c.SubEventChan
 //记录一下订阅的topic信息，以及通知后台协程去实际订阅管道
 func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	if atomic.LoadInt32(&client.State) != stateInit {
@@ -620,10 +635,10 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	// Avoid adding a client to an ephemeral channel / topic which has started exiting.
 	var channel *Channel
 	for {
-		//获取topic和channel，将本客户的加入其client队列
+		//获取topic和channel
 		topic := p.ctx.nsqd.GetTopic(topicName)
-		channel = topic.GetChannel(channelName) //
-		if err := channel.AddClient(client.ID, client); err != nil {
+		channel = topic.GetChannel(channelName)
+		if err := channel.AddClient(client.ID, client); err != nil { //将client加入到相应的channel中
 			return nil, protocol.NewFatalClientErr(nil, "E_TOO_MANY_CHANNEL_CONSUMERS",
 				fmt.Sprintf("channel consumers for %s:%s exceeds limit of %d",
 					topicName, channelName, p.ctx.nsqd.getOpts().MaxChannelConsumers))
@@ -638,11 +653,10 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	}
 	atomic.StoreInt32(&client.State, stateSubscribed)
 	//下面这行很重要，设置本client说订阅的channel，这样接下来的SubEventChan就会由当前clienid开启的后台协程来订阅这个channel的消息,
-	//而这个channel，就是topic-channel结构，里面能找到对应channel的订阅管道
-	client.Channel = channel
+	client.Channel = channel //在client中也记录下这个channel
 	// update message pump
 	//通知后台订阅协程来订阅消息,包括内存管道和磁盘
-	client.SubEventChan <- channel
+	client.SubEventChan <- channel //此处把整个channel结构体作为chan传递，主要目的只是通知客户端的messagePump不要阻塞了。
 
 	return okBytes, nil
 }
@@ -772,7 +786,7 @@ func (p *protocolV2) CLS(client *clientV2, params [][]byte) ([]byte, error) {
 func (p *protocolV2) NOP(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, nil
 }
-
+//这是用tcp的方式来PUB,但是和用http的方式大同小异，详情见http的doPUB
 func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 	var err error
 
@@ -786,7 +800,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 			fmt.Sprintf("PUB topic name %q is not valid", topicName))
 	}
 
-	bodyLen, err := readLen(client.Reader, client.lenSlice)
+	bodyLen, err := readLen(client.Reader, client.lenSlice)//消息体, 在client 请求的下一行开始, 头4个字节是消息体长度
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body size")
 	}
@@ -801,18 +815,18 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 			fmt.Sprintf("PUB message too big %d > %d", bodyLen, p.ctx.nsqd.getOpts().MaxMsgSize))
 	}
 
-	messageBody := make([]byte, bodyLen)
+	messageBody := make([]byte, bodyLen) //建立缓冲区，并将此长度的消息读入
 	_, err = io.ReadFull(client.Reader, messageBody)
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body")
 	}
-
+	//client 是否有权限对这个 topic 做 PUB 操作
 	if err := p.CheckAuth(client, "PUB", topicName, ""); err != nil {
 		return nil, err
 	}
 	//get一下topic，如果没有会自动创建，并且开启topic的消息循环，开始从lookupd同步消息
 	topic := p.ctx.nsqd.GetTopic(topicName)
-	msg := NewMessage(topic.GenerateID(), messageBody)
+	msg := NewMessage(topic.GenerateID(), messageBody) //GenerateID产生一个消息的唯一标识符
 	err = topic.PutMessage(msg) //实际上就是topic.put,将消息放入t.memoryMsgChan或者磁盘后就返回了。客户端流程结束.
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_PUB_FAILED", "PUB failed "+err.Error())

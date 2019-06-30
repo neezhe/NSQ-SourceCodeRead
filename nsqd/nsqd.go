@@ -52,16 +52,16 @@ type NSQD struct {
 	dl        *dirlock.DirLock
 	isLoading int32
 	errValue  atomic.Value
-	startTime time.Time
+	startTime time.Time //记录这个实例生成的时间
 
-	topicMap map[string]*Topic
+	topicMap map[string]*Topic  //一个NSQD中对应一个Topic，一个Topic中对应一个Channel
 
 	clientLock sync.RWMutex
-	clients    map[int64]Client
+	clients    map[int64]Client //标识符id对应的client，来一个client就存储一下。
 
 	lookupPeers atomic.Value
 
-	tcpListener   net.Listener
+	tcpListener   net.Listener //同样，一个NSQD实例有3个这种服务
 	httpListener  net.Listener
 	httpsListener net.Listener
 	tlsConfig     *tls.Config
@@ -87,10 +87,10 @@ func New(opts *Options) (*NSQD, error) {
 	if opts.Logger == nil {
 		opts.Logger = log.New(os.Stderr, opts.LogPrefix, log.Ldate|log.Ltime|log.Lmicroseconds)
 	}
-
+    //记录以下当前时间和文件路径并把所有的map/chan都初始化一下。
 	n := &NSQD{
 		startTime:            time.Now(),
-		topicMap:             make(map[string]*Topic),
+		topicMap:             make(map[string]*Topic), //make和new的功能相似都是分配空间，但是make只能用在slice/map/chan上，因为这3中类型在使用前必须进行初始化,结构体中只是类型声明，此处进行了初始化，相当于topicMap：=map[string]*Topic{}
 		clients:              make(map[int64]Client),
 		exitChan:             make(chan int),
 		notifyChan:           make(chan interface{}),
@@ -253,25 +253,25 @@ func (n *NSQD) Main() error {
 			exitCh <- err
 		})
 	}
-
+//tcp服务可以当生产者发消息也可以当消费者订阅消息，http服务可以用来当生产者发消息（不可以订阅）还可以提供给nsqadmin获取该nsqd本地topic和channel信息
 	tcpServer := &tcpServer{ctx: ctx}
 	n.waitGroup.Wrap(func() {
-		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf))  //tcp服务，tcp的处理函数和nsqlookupd中的不一样。
+		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf))  //tcp服务，tcp的处理函数和nsqlookupd中的不一样。它可以PUB
 	})
 	httpServer := newHTTPServer(ctx, false, n.getOpts().TLSRequired == TLSRequired)
 	n.waitGroup.Wrap(func() {
-		exitFunc(http_api.Serve(n.httpListener, httpServer, "HTTP", n.logf)) //http服务
+		exitFunc(http_api.Serve(n.httpListener, httpServer, "HTTP", n.logf)) //http服务。可以PUB
 	})
 	if n.tlsConfig != nil && n.getOpts().HTTPSAddress != "" {
 		httpsServer := newHTTPServer(ctx, true, true)
-		n.waitGroup.Wrap(func() {
+		n.waitGroup.Wrap(func() {//它也能在第三个端口监听 HTTPS
 			exitFunc(http_api.Serve(n.httpsListener, httpsServer, "HTTPS", n.logf)) //https服务
 		})
 	}
 
-	n.waitGroup.Wrap(n.queueScanLoop) //队列scan扫描协程,通过动态的调整queueScanWorker的数目来处理
+	n.waitGroup.Wrap(n.queueScanLoop) //用于进行msg重试，作用对象是inflight队列和deferred队列。保证消息“至少投递一次” 是由这个goroutine中的queueScanWorker 不断的扫描 InFlightQueue 实现的。
 	//in-flight和deffered queue的。在具体的算法上的话参考了redis的随机过期算法。
-	n.waitGroup.Wrap(n.lookupLoop) //处理与nsqlookupd进程的交互。
+	n.waitGroup.Wrap(n.lookupLoop) //处理与nsqlookupd进程的交互。和lookupd建立长连接，每隔15s ping一下lookupd，新增或者删除topic的时候通知到lookupd，新增或者删除channel的时候通知到lookupd，动态的更新options
 	if n.getOpts().StatsdAddress != "" {  //如果配置了状态地址，开启状态协程
 		n.waitGroup.Wrap(n.statsdLoop)
 	}
@@ -603,23 +603,29 @@ func (n *NSQD) channels() []*Channel {
 // 	1 <= pool <= min(num * 0.25, QueueScanWorkerPoolMax)
 //
 func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, closeCh chan int) {
-	idealPoolSize := int(float64(num) * 0.25)
+	idealPoolSize := int(float64(num) * 0.25) // 校验启动的worker数量，默认理想为nsqd的所有channel数 * 1/4,
 	if idealPoolSize < 1 {
 		idealPoolSize = 1
 	} else if idealPoolSize > n.getOpts().QueueScanWorkerPoolMax {
 		idealPoolSize = n.getOpts().QueueScanWorkerPoolMax
 	}
 	for {
+		// 当前启动的worker数等于设定的idealPoolSize，那么直接返回，
+		// 如果大于了idealPoolSize，通过closeCh关闭一个worker
+		// 如果未达到idealPoolSize，启动worker的goroutine
 		if idealPoolSize == n.poolSize {
 			break
 		} else if idealPoolSize < n.poolSize {
-			// contract
+			// queueScanWorker 多了, 减少一个
+			// 利用 chan 的特性, 向closeCh 推一个消息, 这样 所有的 worCh 就会随机有一个收到这个消息（这是go chan本身的语言特性）, 然后关闭
+			// 细节: 这里跟 exitCh 的用法不同, exitCh 是要告知 "所有的" looper 退出, 所以使用的是 close(exitCh) 的用法
+			// 而如果想 让其中 一个 退出, 则使用 exitCh <- 1 的用法
 			closeCh <- 1
 			n.poolSize--
 		} else {
-			// expand
+			// queueScanWorker 少了, 增加一个
 			n.waitGroup.Wrap(func() {
-				n.queueScanWorker(workCh, responseCh, closeCh)
+				n.queueScanWorker(workCh, responseCh, closeCh) //worker的具体实现是queueScanWorker
 			})
 			n.poolSize++
 		}
@@ -634,13 +640,17 @@ func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, close
 		case c := <-workCh:
 			now := time.Now().UnixNano()
 			dirty := false
-			if c.processInFlightQueue(now) {
+			if c.processInFlightQueue(now) {// 实现消息至少被投递一次，目的就是把所有超时的消息再发一遍。
+				dirty = true //超时就是脏的
+			}
+			if c.processDeferredQueue(now) {// 实现延迟消息队列，也是按超时的堆排序来进行的。
 				dirty = true
 			}
-			if c.processDeferredQueue(now) {
-				dirty = true
-			}
-			responseCh <- dirty
+			responseCh <- dirty // 如果有过期消息的存在，则dirty
+			//注意这个地方, 跟 之前的close(exitChan) 用法不同
+			//这里是启动多个worker, 然后当判断worker太多了, 需要关闭一个多余的worker时
+			//给 closeCh <- 1 发个消息, 利用golang chan 随机分发的特性
+			//这样就会随机的关闭掉一个 worker, 也就是随机退出一个 queueScanWorker 的 循环
 		case <-closeCh:
 			return
 		}
@@ -661,23 +671,23 @@ func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, close
 // If QueueScanDirtyPercent (default: 25%) of the selected channels were dirty,
 // the loop continues without sleep.
 func (n *NSQD) queueScanLoop() {
-	workCh := make(chan *Channel, n.getOpts().QueueScanSelectionCount)
-	responseCh := make(chan bool, n.getOpts().QueueScanSelectionCount)
-	closeCh := make(chan int)
-
+	workCh := make(chan *Channel, n.getOpts().QueueScanSelectionCount)//任务派发 队列
+	responseCh := make(chan bool, n.getOpts().QueueScanSelectionCount)//任务结果 队列
+	closeCh := make(chan int) // 用来优雅关闭
+	// 利用Ticket来定期开始任务和调整worker
 	workTicker := time.NewTicker(n.getOpts().QueueScanInterval)
 	refreshTicker := time.NewTicker(n.getOpts().QueueScanRefreshInterval)
 
 	channels := n.channels()
-	n.resizePool(len(channels), workCh, responseCh, closeCh)
+	n.resizePool(len(channels), workCh, responseCh, closeCh)// 调整worker，调整队列扫描任务的worker的数量
 
 	for {
 		select {
-		case <-workTicker.C:
+		case <-workTicker.C:// 开始一次任务的派发
 			if len(channels) == 0 {
 				continue
 			}
-		case <-refreshTicker.C:
+		case <-refreshTicker.C:// 重新调整 worker 数量
 			channels = n.channels()
 			n.resizePool(len(channels), workCh, responseCh, closeCh)
 			continue
@@ -685,23 +695,24 @@ func (n *NSQD) queueScanLoop() {
 			goto exit
 		}
 
-		num := n.getOpts().QueueScanSelectionCount
+		num := n.getOpts().QueueScanSelectionCount // num最大为nsqd的所有channel总数
 		if num > len(channels) {
 			num = len(channels)
 		}
 
 	loop:
-		for _, i := range util.UniqRands(num, len(channels)) {
+		for _, i := range util.UniqRands(num, len(channels)) { // 随机取出num个channel, 派发给 worker 进行 扫描
 			workCh <- channels[i]
 		}
-
+		// 接收 扫描结果, 统一 有多少 channel 是 "脏" 的
 		numDirty := 0
 		for i := 0; i < num; i++ {
 			if <-responseCh {
 				numDirty++
 			}
 		}
-
+		// 假如 "脏" 的 "比例" 大于阀值, 则不等待 workTicker
+		// 马上进行下一轮 扫描
 		if float64(numDirty)/float64(num) > n.getOpts().QueueScanDirtyPercent {
 			goto loop
 		}

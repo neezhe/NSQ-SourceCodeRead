@@ -38,7 +38,9 @@ func nsqlookupdFlagSet(opts *nsqlookupd.Options) *flag.FlagSet {
 
 	return flagSet
 }
-
+//svc采用了模板设计模式在负责初始化、启动、关闭进程。
+//这些初始化Init、启动Start和关闭Stop方法通过接口定义，交给具体进程去实现（此处program实现了这几个方法）。而svc则负责管理何时去调用这些方法。
+//program结构实现了svc的Service接口。因此可以交给svc来负责管理program的初始化、启动和关闭动作。
 type program struct {
 	once       sync.Once
 	nsqlookupd *nsqlookupd.NSQLookupd

@@ -18,11 +18,11 @@ func NewDeadlineTransport(connectTimeout time.Duration, requestTimeout time.Dura
 	// arbitrary values copied from http.DefaultTransport
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
-			Timeout:   connectTimeout,
+			Timeout:   connectTimeout, //设置建立tcp连接的时间
 			KeepAlive: 30 * time.Second,
 			DualStack: true,
 		}).DialContext,
-		ResponseHeaderTimeout: requestTimeout,
+		ResponseHeaderTimeout: requestTimeout, //设置读取response header的时间（发送请求后，读完返回包头的时间，不包括读返回body的时间），默认是0，无限等待
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,

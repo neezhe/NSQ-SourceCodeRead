@@ -42,9 +42,9 @@ func (p *program) Start() error {
 	opts := nsqd.NewOptions()
 
 	flagSet := nsqdFlagSet(opts)//修改默认配置
-	flagSet.Parse(os.Args[1:])
+	flagSet.Parse(os.Args[1:]) //因为用到了NewFlagSet,所以此处就需要指定Parse的参数，如果用的是默认Flag,则其参数无需指定
 
-	rand.Seed(time.Now().UTC().UnixNano())
+	rand.Seed(time.Now().UTC().UnixNano()) //设置随机数种子，后面所有的随机数的操作都是根据这个种子来的。
 
 	if flagSet.Lookup("version").Value.(flag.Getter).Get().(bool) {
 		fmt.Println(version.String("nsqd"))
@@ -54,7 +54,7 @@ func (p *program) Start() error {
 	var cfg config
 	configFile := flagSet.Lookup("config").Value.String()
 	if configFile != "" {
-		_, err := toml.DecodeFile(configFile, &cfg)
+		_, err := toml.DecodeFile(configFile, &cfg)//
 		if err != nil {
 			logFatal("failed to load config file %s - %s", configFile, err)
 		}

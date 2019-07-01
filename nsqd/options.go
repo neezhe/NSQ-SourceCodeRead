@@ -93,7 +93,7 @@ func NewOptions() *Options {
 	io.WriteString(h, hostname) //此处就是把hostname写到h这个writer的x元素中。
 
 	defaultID := int64(crc32.ChecksumIEEE(h.Sum(nil)) % 1024) //以主机名作为关键字,取得节点的hash值,关于一致性hash的讲解访问http://www.voidcn.com/article/p-udboaius-bps.html
-
+	//上面几步不知道目的是啥
 	return &Options{
 		ID:        defaultID,
 		LogPrefix: "[nsqd] ",
@@ -104,7 +104,7 @@ func NewOptions() *Options {
 		HTTPSAddress:     "0.0.0.0:4152",
 		BroadcastAddress: hostname,
 
-		NSQLookupdTCPAddresses: make([]string, 0),
+		NSQLookupdTCPAddresses: make([]string, 0), //这是什么用法？
 		AuthHTTPAddresses:      make([]string, 0),
 
 		HTTPClientConnectTimeout: 2 * time.Second,

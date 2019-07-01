@@ -94,8 +94,9 @@ func (cfg config) Validate() {
 }
 //通过命令行参数，修改默认配置
 func nsqdFlagSet(opts *nsqd.Options) *flag.FlagSet {
+	//flag包里有3中用法。此处的flagSet.Bool和默认的flag.Bool其实底层调用的一毛一样，只不过NewFlagSet就不用事先声明被赋值的变量，在flagSet.Bool内部已经声明了这个变量
+	//下面的操作只是把第二个参数表示的默认值个第一个参数表示的变量关联起来，以后要用这个变量就直接flagSet.lookup("version")
 	flagSet := flag.NewFlagSet("nsqd", flag.ExitOnError) //第一个参数是可以任意定的.但第二个参数,则决定了参数解析出错时错误处理方式.
-
 	// basic options
 	flagSet.Bool("version", false, "print version string")
 	flagSet.String("config", "", "path to config file")

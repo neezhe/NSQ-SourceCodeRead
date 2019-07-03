@@ -20,7 +20,7 @@ import (
 
 type program struct {
 	once sync.Once
-	nsqd *nsqd.NSQD
+	nsqd *nsqd.NSQD //此处并非组合，组合只能是匿名对象，所以此处就相当于只是记录一下。
 }
 
 func main() {
@@ -37,7 +37,7 @@ func (p *program) Init(env svc.Environment) error {
 	}
 	return nil
 }
-
+//start返回后会进入到svc的代码里面进行等待监听信号量，如果用户杀进程，就调用下面的stop
 func (p *program) Start() error {
 	opts := nsqd.NewOptions()
 
@@ -45,8 +45,7 @@ func (p *program) Start() error {
 	flagSet.Parse(os.Args[1:]) //因为用到了NewFlagSet,所以此处就需要指定Parse的参数，如果用的是默认Flag,则其参数无需指定
 
 	rand.Seed(time.Now().UTC().UnixNano()) //设置随机数种子，后面所有的随机数的操作都是根据这个种子来的。
-
-	if flagSet.Lookup("version").Value.(flag.Getter).Get().(bool) {
+	if flagSet.Lookup("version").Value.(flag.Getter).Get().(bool) {//flag.Getter无法理解
 		fmt.Println(version.String("nsqd"))
 		os.Exit(0)
 	}
@@ -66,7 +65,7 @@ func (p *program) Start() error {
 	if err != nil {
 		logFatal("failed to instantiate nsqd - %s", err)
 	}
-	p.nsqd = nsqd   //start返回后会进入到svc的代码里面进行等待，监听信号量如果用户杀进程，就调用下面的stop
+	p.nsqd = nsqd
 
 	err = p.nsqd.LoadMetadata()//加载磁盘文件nsqd.data时，会先创建所有之前的topic,初始化n.topics结构
 	if err != nil {

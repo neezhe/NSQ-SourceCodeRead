@@ -18,34 +18,35 @@ import (
 //每一个topic后面会有一个消息协程负责处理这个topic的事务。
 type Topic struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
-	messageCount uint64
-	messageBytes uint64
+	messageCount uint64 // 此 topic 所包含的消息的总数（内存+磁盘）
+	messageBytes uint64// 此 topic 所包含的消息的总大小（内存+磁盘）
 
-	sync.RWMutex
+	sync.RWMutex //读写channel的时候要用到的锁
 
 	name              string
 	channelMap        map[string]*Channel //最主要的变量在于channelMap，这是这个topic的所有channel结构。
-	backend           BackendQueue //backend是对应的持久化磁盘存储的队列。
-	memoryMsgChan     chan *Message //memoryMsgChan 是这个topic对应的内存队列
-	startChan         chan int
-	exitChan          chan int
-	channelUpdateChan chan int
-	waitGroup         util.WaitGroupWrapper
-	exitFlag          int32  //这个标志是在删除一个topic时，先设置这个，然后在进行真实删除的。PutMessage的时候也会检查这状态，如果正在进行topic删除，那直接返回不入队
-	idFactory         *guidFactory
+	backend           BackendQueue //backend是对应的持久化磁盘存储的队列。用interface表示一个结构体和方法的集合。
+	memoryMsgChan     chan *Message //memoryMsgChan 是这个topic对应的内存队列，即消息在内存中的通道
+	startChan         chan int // 消息处理循环开关
+	exitChan          chan int // topic 消息处理循环退出开关
+	channelUpdateChan chan int // 消息更新的开关
+	waitGroup         util.WaitGroupWrapper // waitGroup 的一个 wrapper
+	exitFlag          int32  //这个标志是在删除一个topic时，先设置这个，然后再进行真实删除的。PutMessage的时候也会检查这状态，如果正在进行topic删除，那直接返回不入队。
+	idFactory         *guidFactory // 用于生成客户端实例的ID
 
-	ephemeral      bool //临时topic以#开头，这样的topic不会写到磁盘上，并且放入内存队列后会丢掉，最后一个channel删除后也会删除这个topic，没有持久化
-
-	deleteCallback func(*Topic) //topic删除函数，其实是DeleteExistingTopic, 只有在DeleteExistingChannel里面，topic是ephemeral且最后一个channel也删除后会调用
+	ephemeral      bool //临时topic以#开头，这样的topic不会写到磁盘上（不会持久化），当此 topic 所包含的所有的 channel 都被删除后，被标记为ephemeral的topic也会被删除
+	deleteCallback func(*Topic) // topic 被删除前的回调函数，且对 ephemeral 类型的 topic有效，并且它只在 DeleteExistingChannel 方法中被调用
 	deleter        sync.Once
 
-	paused    int32
+	paused    int32 //标记此topic是否有被paused，若被paused，则其不会将消息写入到其关联的channel的消息队列
 	pauseChan chan int
 
 	ctx *context
 }
 
-// Topic constructor
+//程序中存在以下几条链来调用NewTopic创建NewTopic：其一，nsqd.Start->nsqd.PersistMetadata->nsqd.GetTopic->NewTopic；
+// 其二，httpServer.getTopicFromQuery->nsqd.GetTopic->NewTopic；
+// 以及protocolV2.PUB/SUB->nsqd.GetTopic这三条调用路径。
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
 	//初始化一个topic结构，并且设置其backend持久化结构，然后开启消息监听协程messagePump,处理消息。
 	t := &Topic{
@@ -64,7 +65,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 	//HasPrefix检查字符串前缀开头，HasSuffix检查字符串后缀结尾。
 	if strings.HasSuffix(topicName, "#ephemeral") { //临时topic以#ephemeral开头，没有持久化机制，只放入内存中，所以其backend其实是个黑洞，直接丢掉
 		t.ephemeral = true
-		t.backend = newDummyBackendQueue()//生成一个go chan
+		t.backend = newDummyBackendQueue()//new一个不是真正意义上的BackendQueue,其实只是生成了一个go chan。真正意义的BackendQueue是下面的diskQueue。
 	} else {
 		//正常的topic，需要设置其log函数，以及最重要的，backend持久化机制
 		dqLogf := func(level diskqueue.LogLevel, f string, args ...interface{}) {
@@ -72,15 +73,17 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 			lg.Logf(opts.Logger, opts.LogLevel, lg.LogLevel(level), f, args...)
 		}
 		//下面初始化一下持久化的diskqueue数据结构, 传入路径和文件大小相关的参数，以及sync刷磁盘的配置
-		t.backend = diskqueue.New(
+		//diskqueue这个包主要功能是消息持久化存储组件。
+		//diskQueue是从nsq项目中抽取而来，将它单独作为一个项目go-diskqueue。它本身比较简单，只有一个源文件diskqueue.go。
+		t.backend = diskqueue.New( //注意这个diskQueue是一个私有的，必须通过其自带方法才能访问。小写都是针对包而言的，所有的小写都不能被其他包访问，但是能被本包访问。这里的New是大写，也就是说通过暴露出来的方法来操作包的私有比变量。
 			topicName,
-			ctx.nsqd.getOpts().DataPath,
-			ctx.nsqd.getOpts().MaxBytesPerFile,
-			int32(minValidMsgLength),
-			int32(ctx.nsqd.getOpts().MaxMsgSize)+minValidMsgLength,
-			ctx.nsqd.getOpts().SyncEvery,
-			ctx.nsqd.getOpts().SyncTimeout,
-			dqLogf,
+			ctx.nsqd.getOpts().DataPath, // 数据存储路径，当前目录或指定的目录
+			ctx.nsqd.getOpts().MaxBytesPerFile, // 存储文件的最大字节数
+			int32(minValidMsgLength), // 最小的有效消息的长度
+			int32(ctx.nsqd.getOpts().MaxMsgSize)+minValidMsgLength, // 最大的有效消息的长度
+			ctx.nsqd.getOpts().SyncEvery, // 单次同步刷新消息的数量，即当消息数量达到 SyncEvery 的数量时，需要执行刷新动作（否则会留在操作系统缓冲区）
+			ctx.nsqd.getOpts().SyncTimeout, // 两次同步刷新的时间间隔，即两次同步操作的最大间隔
+			dqLogf, // 日志
 		)
 	}
 

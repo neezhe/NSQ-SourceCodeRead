@@ -40,7 +40,7 @@ func NewClient(tlsConfig *tls.Config, connectTimeout time.Duration, requestTimeo
 	return &Client{
 		c: &http.Client{
 			Transport: transport,
-			Timeout:   requestTimeout,
+			Timeout:   requestTimeout,//这个超时时间管的太宽了。其覆盖了请求的全部过程，从连接建立一直到获得请求结果。
 		},
 	}
 }

@@ -45,21 +45,21 @@ type NSQD struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
 	clientIDSequence int64
 
-	sync.RWMutex
+	sync.RWMutex //此处组合了锁，在读写和创建topic的时候，用到其方法RLock和RUnlock
 
 	opts atomic.Value
 
-	dl        *dirlock.DirLock
-	isLoading int32
-	errValue  atomic.Value
+	dl        *dirlock.DirLock //这个文件锁貌似只在linux中用到。
+	isLoading int32 //这个也用于原子操作，但是他是基本类型，不需要再被atomic.Value包一下。
+	errValue  atomic.Value // 表示健康状况的错误值
 	startTime time.Time //记录这个实例生成的时间
-
-	topicMap map[string]*Topic  //一个NSQD中对应一个Topic，一个Topic中对应一个Channel
+	//一个nsqd实例可以有多个Topic,使用sync.RWMutex加锁
+	topicMap map[string]*Topic  //一个NSQD中对应多个Topic集合，string表示的是Topic名称。
 
 	clientLock sync.RWMutex
 	clients    map[int64]Client //标识符id对应的client，来一个client就存储一下。
 
-	lookupPeers atomic.Value
+	lookupPeers atomic.Value //需要并发保护的变量，// nsqd与nsqlookupd之间网络连接抽象实体
 
 	tcpListener   net.Listener //同样，一个NSQD实例有3个这种服务
 	httpListener  net.Listener
@@ -70,8 +70,8 @@ type NSQD struct {
 
 	notifyChan           chan interface{}
 	optsNotificationChan chan struct{}
-	exitChan             chan int
-	waitGroup            util.WaitGroupWrapper
+	exitChan             chan int // 通知整体退出
+	waitGroup            util.WaitGroupWrapper // 等待goroutine退出
 
 	ci *clusterinfo.ClusterInfo
 }
@@ -80,12 +80,14 @@ func New(opts *Options) (*NSQD, error) {
 	var err error
 
 	dataPath := opts.DataPath //数据保存地址
-	if opts.DataPath == "" {
+	if opts.DataPath == "" {// 为空就选择当前目录
 		cwd, _ := os.Getwd()//获取当前目录，类似Linux的pwd命令
 		dataPath = cwd
 	}
 	if opts.Logger == nil {
-		opts.Logger = log.New(os.Stderr, opts.LogPrefix, log.Ldate|log.Ltime|log.Lmicroseconds)
+		//日志输出大多都是stderr标准错误输出, 无缓冲实时性强,stderr本来就是为了输出日志、错误信息之类的运行数据而存在的
+		//LstdFlags= Ldate | Ltime,Lmicroseconds表示把时间的毫秒部分也输出出来
+		opts.Logger = log.New(os.Stderr, opts.LogPrefix, log.Ldate|log.Ltime|log.Lmicroseconds) //opts.Logger在n.logf中被用到
 	}
     //记录以下当前时间和文件路径并把所有的map/chan都初始化一下。
 	n := &NSQD{
@@ -97,27 +99,27 @@ func New(opts *Options) (*NSQD, error) {
 		optsNotificationChan: make(chan struct{}, 1),
 		dl:                   dirlock.New(dataPath),
 	}
-	httpcli := http_api.NewClient(nil, opts.HTTPClientConnectTimeout, opts.HTTPClientRequestTimeout)
+	httpcli := http_api.NewClient(nil, opts.HTTPClientConnectTimeout, opts.HTTPClientRequestTimeout) //设置http连接的超时时间，没有用默认的。
 	n.ci = clusterinfo.New(n.logf, httpcli)
 
-	n.lookupPeers.Store([]*lookupPeer{})
-	//原子操作
-	n.swapOpts(opts)
+	n.lookupPeers.Store([]*lookupPeer{})//n.lookupPeers是atomic.Value类型，存放需要做并发保护的变量
+	n.swapOpts(opts)//原子操作，把opts存到NSQD.opts这个变量中。
 	n.errValue.Store(errStore{})
-	//目录写锁
-	err = n.dl.Lock()
-	if err != nil {
+
+	err = n.dl.Lock()// 锁定数据目录（Exit函数中解锁）
+	if err != nil {//失败（锁不上）就退出，说明其他实例在访问
 		return nil, fmt.Errorf("--data-path=%s in use (possibly by another instance of nsqd)", dataPath)
 	}
-
+	// 最大的压缩比率等级
 	if opts.MaxDeflateLevel < 1 || opts.MaxDeflateLevel > 9 {
 		return nil, errors.New("--max-deflate-level must be [1,9]")
 	}
-
+	// work-id范围是[0,1024)
 	if opts.ID < 0 || opts.ID >= 1024 {
 		return nil, errors.New("--node-id must be [0,1024)")
 	}
-
+	//配置推送数据到指定的 statsd , nsqd就会发生对应的 nsqd.*的统计数据到stats.
+	//statsd 有四种指标类型：counter计数器、timer计时器、gauge标量和set。
 	if opts.StatsdPrefix != "" {
 		var port string
 		_, port, err = net.SplitHostPort(opts.HTTPAddress)
@@ -131,7 +133,8 @@ func New(opts *Options) (*NSQD, error) {
 		}
 		opts.StatsdPrefix = prefixWithHost
 	}
-
+	//TLS和SSL都是在应用层和传输层之间对数据加密，确保传输安全。
+	//HTTPS，也称作HTTP over TLS。TLS的前身是SSL。
 	if opts.TLSClientAuthPolicy != "" && opts.TLSRequired == TLSNotRequired {
 		opts.TLSRequired = TLSRequired
 	}
@@ -151,10 +154,10 @@ func New(opts *Options) (*NSQD, error) {
 		}
 	}
 
-	n.logf(LOG_INFO, version.String("nsqd"))
+	n.logf(LOG_INFO, version.String("nsqd")) //由opt中的Logger规定打印到何出。
 	n.logf(LOG_INFO, "ID: %d", opts.ID)
 
-	n.tcpListener, err = net.Listen("tcp", opts.TCPAddress)
+	n.tcpListener, err = net.Listen("tcp", opts.TCPAddress)//创建n.tcpListener，后续在这个listener上accept,accept的时候就是等待客户端连接（可阻塞或非阻塞）。
 	if err != nil {
 		return nil, fmt.Errorf("listen (%s) failed - %s", opts.TCPAddress, err)
 	}
@@ -163,7 +166,7 @@ func New(opts *Options) (*NSQD, error) {
 		return nil, fmt.Errorf("listen (%s) failed - %s", opts.HTTPAddress, err)
 	}
 	if n.tlsConfig != nil && opts.HTTPSAddress != "" {
-		n.httpsListener, err = tls.Listen("tcp", opts.HTTPSAddress, n.tlsConfig)
+		n.httpsListener, err = tls.Listen("tcp", opts.HTTPSAddress, n.tlsConfig) //https
 		if err != nil {
 			return nil, fmt.Errorf("listen (%s) failed - %s", opts.HTTPSAddress, err)
 		}
@@ -173,7 +176,7 @@ func New(opts *Options) (*NSQD, error) {
 }
 
 func (n *NSQD) getOpts() *Options {
-	return n.opts.Load().(*Options)
+	return n.opts.Load().(*Options) //从线程安全的n.opts中读取上一步存放的内容。这个n.opts在前面创建NSQD的时候被原子操作存入了。
 }
 
 func (n *NSQD) swapOpts(opts *Options) {
@@ -292,12 +295,12 @@ type meta struct {
 }
 
 func newMetadataFile(opts *Options) string {
-	return path.Join(opts.DataPath, "nsqd.dat")
+	return path.Join(opts.DataPath, "nsqd.dat")//将任意数量的路径元素拼接为单个路径返回，会自动忽略空格自动添加斜杠。
 }
 
 func readOrEmpty(fn string) ([]byte, error) {
-	data, err := ioutil.ReadFile(fn)
-	if err != nil {
+	data, err := ioutil.ReadFile(fn) //在DecodeFile函数中也用到此函数。
+	if err != nil {//读完不为nil，则有错。
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("failed to read metadata from %s - %s", fn, err)
 		}
@@ -325,7 +328,7 @@ func writeSyncFile(fn string, data []byte) error {
 //在扫描topic和channel的时候，分别会调用 GetTopic， GetChannel， 其实这两个函数如果在判断topic不存在的时候，会创建他，并且跟lookupd进行联系.
 func (n *NSQD) LoadMetadata() error {
 	//标识元数据已加载
-	atomic.StoreInt32(&n.isLoading, 1)
+	atomic.StoreInt32(&n.isLoading, 1)//通过原子操作的方式把1写入n.isLoading
 	defer atomic.StoreInt32(&n.isLoading, 0)
 	//元数据文件名称，这里有两个文件，其实没有，其中老的一个文件使用当前nsqd的ID命名，作备份用的，方便回滚
 	fn := newMetadataFile(n.getOpts())
@@ -338,14 +341,14 @@ func (n *NSQD) LoadMetadata() error {
 		return nil // fresh start
 	}
 
-	var m meta
+	var m meta //是这个格式
 	err = json.Unmarshal(data, &m)
 	if err != nil {
 		return fmt.Errorf("failed to parse metadata in %s - %s", fn, err)
 	}
 
 	for _, t := range m.Topics {
-		if !protocol.IsValidTopicName(t.Name) { //验证topic名称是否有效
+		if !protocol.IsValidTopicName(t.Name) { //验证topic名称是否符合书写规范
 			n.logf(LOG_WARN, "skipping creation of invalid topic %s", t.Name)
 			continue
 		}
@@ -463,17 +466,17 @@ func (n *NSQD) Exit() {
 //消息获取函数，函数会先简单获取一把读锁看topic是否已经存在，如果已经存在直接返回，如果不存在就到后面的创建，初始化流程。
 func (n *NSQD) GetTopic(topicName string) *Topic {
 	// most likely, we already have this topic, so try read lock first.
-	n.RLock() //先锁着看一下有没有
+	n.RLock() //先锁着确保topicMap中的内容不被改变，看一下有没有。读锁占用的情况下会阻止写，不会阻止读，多个 goroutine 可以同时获取读锁。
 	t, ok := n.topicMap[topicName]
 	n.RUnlock()
 	if ok { //如果NSQD找到了这个topic
 		return t
 	}
 	//不存在这topc，得new一个了,  所以直接加锁了整个nsqd结构
-	n.Lock()
+	n.Lock() //写锁，锁住整个Topic的创建过程。
 
 	t, ok = n.topicMap[topicName]
-	if ok {//还有种情况，就在刚才那一瞬间，有其他协程进来了，他new了一个，所以获取锁后还得判断一下是否存在
+	if ok {//还有种情况，就在刚才加写锁那一瞬间，有其他协程进来了，他new了一个，所以获取锁后还得判断一下是否存在
 		n.Unlock()
 		return t
 	}
@@ -481,8 +484,8 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 		n.DeleteExistingTopic(t.name)
 	}
 	//创建一个topic结构，并且里面初始化好diskqueue, 加入到NSQD的topicmap里面
-	//创建topic的时候，会开启消息协程
-	t = NewTopic(topicName, &context{n}, deleteCallback) //创建topic，这个里面会创建topic的messagePump协程接受消息，还会通知lookup加入新的topic，。
+	//创建topic的时候，会开启消息协程。这个里面会创建topic的messagePump协程接受消息，还会通知lookup加入新的topic，。
+	t = NewTopic(topicName, &context{n}, deleteCallback)
 	n.topicMap[topicName] = t
 
 	n.Unlock()

@@ -309,7 +309,7 @@ func (p *prettyConnectionState) GetVersion() string {
 		return fmt.Sprintf("Unknown %d", p.Version)
 	}
 }
-//在这里会检查使用这条连接的客户端是否准备好接收消息，具体来说是通过下面两个变量（ReadyCount和InFlightCount）来判断客户端是否准备好接收消息
+//在这里会检查使用这条连接的客户端是否准备好接收消息：1.具体来说是通过下面两个变量（ReadyCount和InFlightCount）来判断客户端是否准备好接收消息
 //ReadyCount变量就是我们所说的RDY计数，用于表示当前客户端还能够接收的消息数量。
 //InFlightCount，该变量表示当前仍在“飞行中”即仍在发送过程中或是客户端处理过程中的消息数量
 func (c *clientV2) IsReadyForMessages() bool {

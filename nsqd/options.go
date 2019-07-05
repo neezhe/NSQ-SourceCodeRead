@@ -23,7 +23,7 @@ type Options struct {
 	HTTPAddress              string        `flag:"http-address"`
 	HTTPSAddress             string        `flag:"https-address"`
 	BroadcastAddress         string        `flag:"broadcast-address"`
-	NSQLookupdTCPAddresses   []string      `flag:"lookupd-tcp-address" cfg:"nsqlookupd_tcp_addresses"`
+	NSQLookupdTCPAddresses   []string      `flag:"lookupd-tcp-address" cfg:"nsqlookupd_tcp_addresses"` //一个nsqd可连接到多个nsqlookupd实例
 	AuthHTTPAddresses        []string      `flag:"auth-http-address" cfg:"auth_http_addresses"`
 	HTTPClientConnectTimeout time.Duration `flag:"http-client-connect-timeout" cfg:"http_client_connect_timeout"`
 	HTTPClientRequestTimeout time.Duration `flag:"http-client-request-timeout" cfg:"http_client_request_timeout"`

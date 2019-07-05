@@ -43,21 +43,21 @@ type Client interface {
 
 type NSQD struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
-	clientIDSequence int64
+	clientIDSequence int64 // nsqd 借助其为订阅的client生成 ID
 
 	sync.RWMutex //此处组合了锁，在读写和创建topic的时候，用到其方法RLock和RUnlock
 
-	opts atomic.Value
+	opts atomic.Value //配置的结构体实例
 
 	dl        *dirlock.DirLock //这个文件锁貌似只在linux中用到。
-	isLoading int32 //这个也用于原子操作，但是他是基本类型，不需要再被atomic.Value包一下。
+	isLoading int32 //nsqd 当前是否处于启动加载过程。这个也用于原子操作，但是他是基本类型，不需要再被atomic.Value包一下。
 	errValue  atomic.Value // 表示健康状况的错误值
 	startTime time.Time //记录这个实例生成的时间
 	//一个nsqd实例可以有多个Topic,使用sync.RWMutex加锁
 	topicMap map[string]*Topic  //一个NSQD中对应多个Topic集合，string表示的是Topic名称。
 
 	clientLock sync.RWMutex
-	clients    map[int64]Client //标识符id对应的client，来一个client就存储一下。
+	clients    map[int64]Client //标识符id对应的client，来一个client就存储一下。存的是订阅了此nsqd所维护的topic的客户端实体
 
 	lookupPeers atomic.Value //需要并发保护的变量，// nsqd与nsqlookupd之间网络连接抽象实体
 
@@ -66,16 +66,16 @@ type NSQD struct {
 	httpsListener net.Listener
 	tlsConfig     *tls.Config
 
-	poolSize int
+	poolSize int // queueScanWorker的数量，每个 queueScanWorker代表一个单独的goroutine，用于处理消息队列
 
-	notifyChan           chan interface{}
-	optsNotificationChan chan struct{}
-	exitChan             chan int // 通知整体退出
+	notifyChan           chan interface{} //当channel或topic更新时（新增或删除），通知nsqlookupd服务更新对应的注册信息
+	optsNotificationChan chan struct{} // 当 nsqd 的配置发生变更时，可以通过此 channel 通知
+	exitChan             chan int // nsqd 退出开关
 	waitGroup            util.WaitGroupWrapper // 等待goroutine退出
 
 	ci *clusterinfo.ClusterInfo
 }
-
+//New的写法没有reciver
 func New(opts *Options) (*NSQD, error) {
 	var err error
 
@@ -244,9 +244,9 @@ func (n *NSQD) RemoveClient(clientID int64) {
 }
 
 func (n *NSQD) Main() error {
-	ctx := &context{n}
+	ctx := &context{n} //1.首先构建一个Context实例（纯粹nsqd实例的wrapper）
 
-	exitCh := make(chan error)
+	exitCh := make(chan error) // 2. 同 NSQLookupd 类似，构建一个退出 hook 函数，且在退出时仅执行一次
 	var once sync.Once
 	exitFunc := func(err error) {
 		once.Do(func() {
@@ -272,11 +272,11 @@ func (n *NSQD) Main() error {
 		})
 	}
 
-	n.waitGroup.Wrap(n.queueScanLoop) //用于进行msg重试，作用对象是inflight队列和deferred队列。保证消息“至少投递一次” 是由这个goroutine中的queueScanWorker 不断的扫描 InFlightQueue 实现的。
+	n.waitGroup.Wrap(n.queueScanLoop) //用于进行msg重试，作用对象是inflight队列和deferred队列。保证消息“至少投递一次” 是由这个goroutine中的queueScanWorker不断的扫描 InFlightQueue 实现的。
 	//in-flight和deffered queue的。在具体的算法上的话参考了redis的随机过期算法。
 	n.waitGroup.Wrap(n.lookupLoop) //处理与nsqlookupd进程的交互。和lookupd建立长连接，每隔15s ping一下lookupd，新增或者删除topic的时候通知到lookupd，新增或者删除channel的时候通知到lookupd，动态的更新options
-	if n.getOpts().StatsdAddress != "" {  //如果配置了状态地址，开启状态协程
-		n.waitGroup.Wrap(n.statsdLoop)
+	if n.getOpts().StatsdAddress != "" {  //如果配置了状态统计服务进程地址
+		n.waitGroup.Wrap(n.statsdLoop) //还有状态统计处理 go routine
 	}
 
 	err := <-exitCh
@@ -330,11 +330,11 @@ func (n *NSQD) LoadMetadata() error {
 	//标识元数据已加载
 	atomic.StoreInt32(&n.isLoading, 1)//通过原子操作的方式把1写入n.isLoading
 	defer atomic.StoreInt32(&n.isLoading, 0)
-	//元数据文件名称，这里有两个文件，其实没有，其中老的一个文件使用当前nsqd的ID命名，作备份用的，方便回滚
+	// 1. 构建 metadata 文件全路径， nsqd.dat，并读取文件内容
 	fn := newMetadataFile(n.getOpts())
 
 	data, err := readOrEmpty(fn)//读取元数据文件
-	if err != nil { //数据都为空，程序重新开始
+	if err != nil { //如果文件内容为空，则表明是首次启动，直接返回
 		return err
 	}
 	if data == nil {
@@ -352,21 +352,22 @@ func (n *NSQD) LoadMetadata() error {
 			n.logf(LOG_WARN, "skipping creation of invalid topic %s", t.Name)
 			continue
 		}
+		//根据topic或channel的名称获取对应的实例的方法为nsqd.GetTopic和topic.GetChannel方法
 		topic := n.GetTopic(t.Name)//获取指向该topic对象的指针(nsqd/topic.go中Topic struct),如果topic不存在，会自动创建一个
 		if t.Paused {//topic暂停使用，标注到topic对象中
-			topic.Pause()
+			topic.Pause() //设置paused属性，对于topic而言，若paused属性被设置，则它不会将由生产者发布的消息写入到关联的channel的消息队列。
 		}
 		for _, c := range t.Channels {
 			if !protocol.IsValidChannelName(c.Name) {
 				n.logf(LOG_WARN, "skipping creation of invalid channel %s", c.Name)
 				continue
 			}
-			channel := topic.GetChannel(c.Name)
+			channel := topic.GetChannel(c.Name) //获取与该topic关联的channel列表
 			if c.Paused {
-				channel.Pause()
+				channel.Pause() //设置paused属性，对channel而言，若其paused属性被设置，则那些订阅了此channel的客户端不会被推送消息（这点在后面的源码中可以验证）
 			}
 		}
-		topic.Start()
+		topic.Start()//最后调用topic.Start方法向topic.startChan通道中压入一条消息，消息会在topic.messagePump方法中被取出，以表明topic可以开始进入消息队列处理的主循环。
 	}
 	return nil
 }
@@ -374,16 +375,17 @@ func (n *NSQD) LoadMetadata() error {
 //持久化当前的topic,channel数据结构，不涉及到数据不封顶持久化. 写入临时文件后改名， 最后的文件就是nsqd.data。
 // 文件比较长，主要是为了保证操作安全，做尽量保证原值操作的，函数会写了2次文件，第一次是json 数据文件，写好后重命名。
 // 先写入临时文件，然后做一次重命名（os.Rename），这样避免中间出问题只写了一部分数据，rename是原子操作,所以安全，避免不一致性的发生。
-func (n *NSQD) PersistMetadata() error {
+//整个nsq中（包括nsqd和nsqlookupd）涉及到数据持久化的过程只有nsqd的元数据的持久化以及nsqd对消息的持久化（通过diskQueue完成），而nsqlookupd则不涉及持久化操作。
+func (n *NSQD) PersistMetadata() error { //是加载元数据的逆操作
 	// persist metadata about what topics/channels we have, across restarts
 	fileName := newMetadataFile(n.getOpts())
 
 	n.logf(LOG_INFO, "NSQ: persisting topic/channel metadata to %s", fileName)
-
+	//获取nsqd实例内存中的topic集合，并递归地将其对应的channel集合保存到文件，且持久化也是通过先写临时文件，再原子性地重命名。
 	js := make(map[string]interface{})
 	topics := []interface{}{}
 	for _, topic := range n.topicMap {
-		if topic.ephemeral {//如果是临时的，忽略
+		if topic.ephemeral {//如果是临时的，就不需要被持久化
 			continue
 		}
 		topicData := make(map[string]interface{})
@@ -393,7 +395,7 @@ func (n *NSQD) PersistMetadata() error {
 		topic.Lock()
 		for _, channel := range topic.channelMap {
 			channel.Lock()
-			if channel.ephemeral {
+			if channel.ephemeral {  // 临时的 channel 不被持久化
 				channel.Unlock()
 				continue
 			}

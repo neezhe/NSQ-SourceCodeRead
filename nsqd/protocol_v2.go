@@ -32,42 +32,41 @@ var okBytes = []byte("OK")
 type protocolV2 struct {
 	ctx *context
 }
+
 //IOLoop 里主要就是启动了两个线程, 一个处理订阅的消息的发送, 一个处理client 发过来的命令请求
+// 针对连接到 nsqd 的每一个 client，都会单独在一个 goroutine 中执行这样一个 IOLoop请求处理循环
 func (p *protocolV2) IOLoop(conn net.Conn) error {
 	var err error
 	var line []byte
 	var zeroTime time.Time
 
 	clientID := atomic.AddInt64(&p.ctx.nsqd.clientIDSequence, 1)
-	client := newClientV2(clientID, conn, p.ctx)  //创建client结构
+	client := newClientV2(clientID, conn, p.ctx) //创建client结构
 	p.ctx.nsqd.AddClient(client.ID, client)
 
-	// synchronize the startup of messagePump in order
-	// to guarantee that it gets a chance to initialize
-	// goroutine local state derived from client attributes
-	// and avoid a potential race with IDENTIFY (where a client
-	// could have changed or disabled said attributes)
-	//上面注释说了，这里做同步的原因在于，需要确保messagePump里面的初始化完成，再进行下面的操作，
-	//因为当前客户端在后面可能修改相关的数据。消息的订阅发布工作在辅助的messagePump携程处理，下面创建
 	messagePumpStartedChan := make(chan bool)
-	go p.messagePump(client, messagePumpStartedChan)//从该client订阅的channel中读取消息并发送给consumer（通过SendMessage），这个操作的上游就是tpoic的messagePump把消息放入channel
-	<-messagePumpStartedChan //为空的时候会阻塞在此处。
+	go p.messagePump(client, messagePumpStartedChan) //从该client订阅的channel中读取消息并发送给consumer（通过SendMessage），这个操作的上游就是tpoic的messagePump把消息放入channel
+	// 1. 同步 messagePump 的启动过程，因为 messagePump会从client获取的一些属性
+	// 而避免与执行 IDENTIFY 命令的 client 产生数据竞争，即当前client在后面可能修改相关的数据
+	<-messagePumpStartedChan //阻塞在此处等上句messagePump先执行。原因在于，需要确保messagePump里面的初始化完成，当前客户端在后面的操作可能修改相关的数据。消息的订阅发布工作在辅助的messagePump协程处理。
+
 	//下面开始处理client请求，开始循环读取客户端请求然后解析参数，进行处理, 这个工作在客户端的主协程处理
 	for {
-		// 如果 client 设置需要做心跳检查, 则设置 读超时为 两倍 心跳检查间隔
+		// 如果 client 设置需要做心跳检查, 则设置读超时为两倍心跳检查间隔
 		// 也就是说, 在这个时间里, 正常情况下, client肯定会在这个间隔内发一个心跳包过来
-		// read 不会因为client 本来就没消息而超时,
+		// read不会因为client本来就没消息而超时,
 		// 但是如果还是超时了, 那就肯定是 网络连接除了问题
-		//如果 2 个 _heartbeat_ 响应没有被应答， nsqd 将会超时，并且强制关闭客户端连接
+		//如果 2 个 heartbeat响应没有被应答，nsqd将会超时，并且强制关闭客户端连接
 		if client.HeartbeatInterval > 0 {
 			client.SetReadDeadline(time.Now().Add(client.HeartbeatInterval * 2))
 		} else {
-			// 加入client 不设置做心跳则不设置读超时
+			//若客户端未设置 HeartbeatInterval，则读取等待不会超时。 不设置做心跳则不设置读超时
 			client.SetReadDeadline(zeroTime)
 		}
 
 		// ReadSlice does not allocate new space for the data each request
 		// ie. the returned slice is only valid until the next call to it
+		// 2.1 读取命令请求，并对它进行解析，解析命令的类型及参数
 		line, err = client.Reader.ReadSlice('\n')
 		if err != nil {
 			if err == io.EOF {
@@ -121,8 +120,8 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 	}
 
 	p.ctx.nsqd.logf(LOG_INFO, "PROTOCOL(V2): [%s] exiting ioloop", client)
-	conn.Close()//发现只有出错后才会跳出for循环
-	close(client.ExitChan)// 通知 messagePump 退出
+	conn.Close()           //发现只有出错后才会跳出for循环
+	close(client.ExitChan) // 通知 messagePump 退出
 	if client.Channel != nil {
 		client.Channel.RemoveClient(client.ID)
 	}
@@ -149,7 +148,7 @@ func (p *protocolV2) SendMessage(client *clientV2, msg *Message) error {
 }
 
 func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error {
-	client.writeLock.Lock()// 因为client的处理还有一个 messagePump线程, 所以发送要锁
+	client.writeLock.Lock() // 因为client的处理还有一个 messagePump线程, 所以发送要锁
 
 	var zeroTime time.Time
 	if client.HeartbeatInterval > 0 {
@@ -176,10 +175,10 @@ func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error 
 }
 
 func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
-	if bytes.Equal(params[0], []byte("IDENTIFY")) {//这个命令不需要做认证
+	if bytes.Equal(params[0], []byte("IDENTIFY")) { //这个命令不需要做认证
 		return p.IDENTIFY(client, params)
 	}
-	err := enforceTLSPolicy(client, p, params[0])// client是否做了认证
+	err := enforceTLSPolicy(client, p, params[0]) // client是否做了认证
 	if err != nil {
 		return nil, err
 	}
@@ -211,11 +210,27 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, protocol.NewFatalClientErr(nil, "E_INVALID", fmt.Sprintf("invalid command %s", params[0]))
 }
 
+//nsqd 针对每一个 client 的订阅消息的处理循环
 //1. nsqd每个连接上来的客户端会创建一个protocolV2.messagePump协程负责订阅消息（这个协程也在IOLoop被开启），做超时处理；
-//2. 客户端发送SUB命令后，SUB()函数会通知客户端的messagePump携程去订阅这个channel的消息；
+//2. 客户端发送SUB命令后，SUB()函数会通知客户端的messagePump协程去订阅这个channel的消息；
 //3. messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
 //4. 只要有生产者发送消息后，channel.memoryMsgChan便会有新的消息到来，其中一个客户端就能获得管道的消息；
 //5. 拿到消息后调用StartInFlightTimeout将消息放到队列，用来做超时重传，然后调用SendMessage发送给客户端 ；
+//此代码的具体执行：
+//1.首先刚开始肯定是进行第一个if执行，因为subChannel == nil且客户端也未准备好接收消息。注意此时会将各个channel，并刷新缓冲，而且将flushed设置为true；
+//2.应该是identifyEventChan分支被触发，即客户端发送了IDENTIFY命令，此时，设置了部分channel。比如heartbeatChan，因此nsqd可以定期向客户端发送hearbeat消息了。并且heartbeatChan可能在下述的任何时刻触发，但都不影响程序核心执行逻辑；
+//3.此时，就算触发了heartbeatChan，上面的仍然执行第一个if分支，没有太多改变；
+//4.假如此时客户端发送了一个SUB请求，则此时subEventChan分支被触发，此时subChannel被设置，且subEventChan之后再也不能被触发。此时客户端的状态为stateSubscribed；
+//5.接下来，上面的代码执行的仍然是第一个if分支，因为此时subChannel != nil，但是客户端仍未准备好接收消息，即客户端的ReadyCount属性还未初始化；
+//6.按正常情况，此时客户端应该会发送RDY命令请求，设置自己的ReadyCount，即表示客户端能够处理消息的数量。
+//7.接下来，上面的代码总算可以执行第二个if分支，终于初始化了memoryMsgChan和backendMsgChan两个用于发送消息的消息队列了，同时将flusherChan设置为nil，显然，此时不需要刷新缓冲区；
+//8.此时，ReadyStateChan分支会被触发，因为客户端的消息处理能力确实发生了改化；
+//9.但ReadyStateChan分支的执行不影响上面代码中被触发的if分支，执行第二个分支。换言之，此时程序中涉及到的各属性没有发生变化；
+//10.现在，按正常情况终于要触发了memoryMsgChan分支，即有生产者向此channel所关联的topic投递了消息，因此nsqd将channel内存队列的消息发送给订阅了此channel的消费者。此时flushed为false；
+//11.接下来，按正常情况（假设客户端还可以继续消息消息，且消息消费未超时），上面代码应该执行第三个if分支，即设置两个消息队列，并设置flusherChan，因为此时确实可能需要刷新缓冲区了。
+//12.一旦触发了flusherChan分支，则flushed又被设置成true。表明暂时不需要刷新缓冲区，直到nsqd发送了消息给客户端，即触发了memoryMsgChan或backendMsgChan分支；
+//13.然后可能又进入第二个if分支，然后发送消息，刷新缓冲区，反复循环…
+//14.假如某个时刻，消费者的消息处理能力已经变为0了，则此时执行第一个if分支，两个消息队列被重置，执行强刷。显然，此时考虑到消费者已经不能再处理消息了，因此需要“关闭”消息发送的管道。
 func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pump就是水泵的意思，就是把消息抽出来发给client
 	var err error
 	var memoryMsgChan chan *Message
@@ -224,58 +239,65 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 	// NOTE: `flusherChan` is used to bound message latency for
 	// the pathological case of a channel on a low volume topic
 	// with >1 clients having >1 RDY counts
-	var flusherChan <-chan time.Time
+	var flusherChan <-chan time.Time //表示需要进行显式地刷新（是一个ticker），用于有多个客户端的低容量topic中的channel上的不可控的消息延时。
 	var sampleRate int32
-
-	subEventChan := client.SubEventChan//subEventChan是客户端有订阅行为的通知channel，订阅一次后会重置为null。这个地方直接这样赋值，后面从subEventChan拿值也会清空client.SubEventChan
+	// 1. 获取客户端的属性
+	subEventChan := client.SubEventChan //subEventChan是客户端有订阅行为的通知channel，订阅一次后会重置为null。这个地方直接这样赋值，后面从subEventChan拿值也会清空client.SubEventChan
 	identifyEventChan := client.IdentifyEventChan
 	outputBufferTicker := time.NewTicker(client.OutputBufferTimeout)
 	heartbeatTicker := time.NewTicker(client.HeartbeatInterval) //设置和客户端的心跳定时器
 	heartbeatChan := heartbeatTicker.C
 	msgTimeout := client.MsgTimeout
 
-	// v2 opportunistically buffers data to clients to reduce write system calls
-	// we force flush in two cases:
-	//    1. when the client is not ready to receive messages
-	//    2. we're buffered and the channel has nothing left to send us
-	//       (ie. we would block in this loop anyway)
-	//
+	// V2 版本的协议采用了选择性地将返回给 client 的数据进行缓冲，即通过减少系统调用频率来提高效率
+	// 只有在两种情况下才采取显式地刷新缓冲数据
+	// 		1. 当 client 还未准备好接收数据。
+	// 			a. 若 client 所订阅的 channel 被 paused
+	// 			b. client 的readyCount被设置为0，
+	// 			c. readyCount小于当前正在发送的消息的数量 inFlightCount
+	//		2. 当 channel 没有更多的消息给我发送了，在这种情况下，当前程序会阻塞在两个通道上
 	flushed := true
 
 	// signal to the goroutine that started the messagePump
 	// that we've started up
 	close(startedChan)
-    //开始处理client请求
-	for { //每次select中的chan有值都会跑一次for循环，每次循环都会跑一下此处的if语句。
-		if subChannel == nil || !client.IsReadyForMessages() {//第一次进入到此messagePump函数中时，会进入到此if语句，因为subChannel == nil
+
+	for {
+		//subChannel == nil即此客户端未订阅任何channel或者客户端还未准备好接收消息
+		if subChannel == nil || !client.IsReadyForMessages() { //第一次进入到此messagePump函数中时，会进入到此if语句，因为subChannel == nil；没准备好也会进入此分支。
 			// the client is not ready to receive messages...
-			memoryMsgChan = nil//当客户端订阅的channel还未创建完毕时，或者没有准备好时，与该channel相关联的用于接收消息的内存消息队列和磁盘消息队列都会被置位空，进而不会接收到任何消息。
+			memoryMsgChan = nil //当客户端订阅的channel还未创建完毕时，或者没有准备好时，与该channel相关联的用于接收消息的内存消息队列和磁盘消息队列都会被置位空，进而不会接收到任何消息。
 			backendMsgChan = nil
 			flusherChan = nil
 			// force flush
 			client.writeLock.Lock()
-			err = client.Flush()
+			err = client.Flush() // 强制刷新缓冲区
 			client.writeLock.Unlock()
 			if err != nil {
 				goto exit
 			}
 			flushed = true
-		} else if flushed { //注意就算前个if语句中flushed被置为true,也不会进去到此处
+		} else if flushed {
 			// last iteration we flushed...
 			// do not select on the flusher ticker channel
+			// 表明上一个循环中，我们已经显式地刷新过，准确而言，应该上从client.SubEventChan中接收到了subChannelclient订阅某个 channel 导致的）
+			// 因此初始化memoryMsgChan和backendMsgChan 两个 channel，
+			// 实际上这两个 channel 即为 client 所订阅的 channel的两个消息队列
 			memoryMsgChan = subChannel.memoryMsgChan
 			backendMsgChan = subChannel.backend.ReadChan()
-			flusherChan = nil
+			flusherChan = nil // 同时，禁止从 flusherChan 取消息，因为才刚刚设置接收消息的 channel，缓冲区不会数据等待刷新
 		} else {
 			// we're buffered (if there isn't any more data we should flush)...
 			// select on the flusher ticker channel, too
-			memoryMsgChan = subChannel.memoryMsgChan  //messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
+			// 在执行到此之前，subChannel肯定已经被设置过了，且已经从 memoryMsgChan 或 backendMsgChan 取出过消息
+			// 因此，可以准备刷新消息发送缓冲区了，即设置flusherChan
+			memoryMsgChan = subChannel.memoryMsgChan //messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
 			backendMsgChan = subChannel.backend.ReadChan()
 			flusherChan = outputBufferTicker.C
 		}
 
-		select {// 这里负责执行Client 的各种事件
-		case <-flusherChan: //定时chan
+		select { // 这里负责执行Client 的各种事件
+		case <-flusherChan: // 定时刷新消息发送缓冲区
 			// if this case wins, we're either starved
 			// or we won the race between other channels...
 			// in either case, force flush
@@ -286,15 +308,25 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 				goto exit
 			}
 			flushed = true
+			// 客户端处理消息的能力发生了变化会触发此处解除阻塞，比如客户端刚消费了某个消息
 		case <-client.ReadyStateChan: //这个case下面没有什么要处理的，目的就是解除阻塞，进行for循环上面的if语句判断。
-		case subChannel = <-subEventChan://subChannel是有用的，在下面被用到，subChannel就是订阅Chnanel,Client需要发送一个SUB请求来订阅Channel,并且一个Client只能订阅一个Channel
-			//当客户端发送了SUB操作后，通知此后台消息循环协程：你需要订阅一个新的channel并且关注其事件。
-			//然后就在上面的循环中设置对应的memoryMsgChan 或者backend.ReadChan() 进行监听
+		case subChannel = <-subEventChan: //subChannel在下面被用到，subChannel就是订阅Chnanel,Client需要发送一个SUB请求来订阅Channel
+			// 将 subEventChan 重置为nil，原因表示之后不能从此通道中接收到消息
+			// 而置为nil的原因是，在SUB命令请求方法中第一行即为检查此客户端是否处于 stateInit 状态，
+			// 而调用 SUB 了之后，状态变为 stateSubscribed
 			subEventChan = nil
-		case identifyData := <-identifyEventChan:
+			// 当 nsqd 收到 client 发送的 IDENTIFY 请求时，会设置此 client的属性信息，然后将信息 push 到	identifyEventChan。
+			// 因此此处就会收到一条消息，同样将 identifyEventChan 重置为nil，这表明只能从 identifyEventChan 通道中接收一次消息，因为在一次连接过程中，只允许客户端初始化一次。
+			// 在IDENTIFY命令处理请求中可看到在第一行时进行了检查，若此时客户端的状态不是 stateInit，则会报错。
+			// 最后，根据客户端设置的信息，更新部分属性，如心跳间隔 heartbeatTicker
+		case identifyData := <-identifyEventChan: //传递一些由客户端设置的一些参数，参数包括OutputBufferTimeout、HeartbeatInterval、SampleRate以及MsgTimeout，它们是在客户端发出IDENTIFY命令请求时，被压入到identifyEventChan管道的。
+			//其中OutputBufferTimeout用于构建flusherChan定时刷新发送给客户端的消息数据，
+			// 而HeartbeatInterval用于定时向客户端发送心跳消息，
+			// SampleRate则用于确定此次从channel中取出的消息，是否应该发送给此客户端	，
+			//最后的MsgTimeout则用于设置消息投递并被处理的超时时间，最后会被设置成message.pri作为消息先后发送顺序的依据
 			// you can't IDENTIFY anymore
-			identifyEventChan = nil
-
+			identifyEventChan = nil //IDENTIFY命令的时候会设置此identifyEventChan
+			//根据客户端设置的信息，更新部分属性
 			outputBufferTicker.Stop()
 			if identifyData.OutputBufferTimeout > 0 {
 				outputBufferTicker = time.NewTicker(identifyData.OutputBufferTimeout)
@@ -313,32 +345,39 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 
 			msgTimeout = identifyData.MsgTimeout
 		case <-heartbeatChan: //由于有定时器在，所以此for循环不会出现all goroutine are asleep的错误。
+			//定时向客户端发送心跳消息，由HeartbeatInterval确定
 			err = p.Send(client, frameTypeResponse, heartbeatBytes)
 			if err != nil {
 				goto exit
 			}
 			//开始订阅管道subChannel.memoryMsgChan/backend， 每个客户端都可以订阅到channel的内存或者磁盘队列里面;
-		case b := <-backendMsgChan:
-			if sampleRate > 0 && rand.Int31n(100) > sampleRate {
+		case b := <-backendMsgChan: //关键。当从此通道中收到消息时，表明有channel实例有消息需要发送给此客户端。
+			// 根据 client 在与 nsqd 建立连接后，第一次 client 会向 nsqd 发送 IDENFITY 请求,用来为 nsqd 提供 client 自身的信息，即为 identifyData，而 sampleRate 就包含在其中。
+			// 换言之，客户端会发送一个 0-100 的数字给 nsqd，在 nsqd 服务端，它通过从 0-100 之间随机生成一个数字，
+			// 若其大于 客户端发送过来的数字 sampleRate，则 client 虽然订阅了此 channel，且此 channel中也有消息了，但是不会发送给此 client。
+			// 这里就体现了 官方文档 中所说的，当一个 channel 被 client 订阅时，它会将收到的消息随机发送给这一组 client 中的一个。
+			// 而且，就算只有一个 client，从程序中来看，也不一定能够获取到此消息，具体情况也与 client 编写的程序规则相关
+		if sampleRate > 0 && rand.Int31n(100) > sampleRate { //通过生成一个0到100范围内的随机数，若此随机数小于SampleRate则此消息会发送给此客户端
 				continue
 			}
 
-			msg, err := decodeMessage(b)
+			msg, err := decodeMessage(b) // 将消息解码
 			if err != nil {
 				p.ctx.nsqd.logf(LOG_ERROR, "failed to decode message - %s", err)
 				continue
 			}
-			msg.Attempts++
+			msg.Attempts++ //消息尝试发送的次数msg.Attempts，注意： 当消息发送的次数超过一定限制时，可由 client 自己在应用程序中做处理
 			//subChannel就是要发送消息的channel
-			//inflight功能用来保证消息的一次到达，所有发送给客户端，但是没收到FIN确认的消息都放到这里面：
-			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout)//监听这个channel的请求，如果有消息到来，被触发后发送给客户端
-			client.SendingMessage()
-			err = p.SendMessage(client, msg)//这个很简单，go语言对于网络请求包装的非常像同步读写，比C简单太多了，不需要处理任何内存结构，buffer组织等，方便到不行：
+			//inflight功能用来保证消息的一次到达，所有发送给客户端，但是没收到FIN确认的消息都放到这里面。
+			//然后，调用channel实例的StartInFlightTimeout将消息压入到in-flight queue中（代表正在发送的消息队列），等待被queueScanWorker处理。
+			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout) //监听这个channel的请求，如果有消息到来，被触发后发送给客户端
+			client.SendingMessage()// 更新client 的关于正在发送消息的属性
+			err = p.SendMessage(client, msg) //正式发送消息到指定的 client，这个很简单，go语言对于网络请求包装的非常像同步读写，比C简单太多了，不需要处理任何内存结构，buffer组织等，方便到不行：
 			if err != nil {
 				goto exit
 			}
 			flushed = false
-		case msg := <-memoryMsgChan:
+		case msg := <-memoryMsgChan: // 9. 从 memoryMsgChan 队列中收到了消息
 			if sampleRate > 0 && rand.Int31n(100) > sampleRate {
 				continue
 			}
@@ -352,7 +391,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 				goto exit
 			}
 			flushed = false
-		case <-client.ExitChan:
+		case <-client.ExitChan: //当客户端退出时，则对应的处理循环也需要退出。
 			goto exit
 		}
 	}
@@ -599,6 +638,7 @@ func (p *protocolV2) CheckAuth(client *clientV2, cmd, topicName, channelName str
 	}
 	return nil
 }
+
 //消费者使用TCP协议，发送SUB topic channel命令订阅某个channel，NSQD会获取需要订阅的topic和channel，然后将client添加到相应的channel中，通知c.SubEventChan
 //记录一下订阅的topic信息，以及通知后台协程去实际订阅管道
 func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
@@ -786,6 +826,7 @@ func (p *protocolV2) CLS(client *clientV2, params [][]byte) ([]byte, error) {
 func (p *protocolV2) NOP(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, nil
 }
+
 //这是用tcp的方式来PUB,但是和用http的方式大同小异，详情见http的doPUB
 func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 	var err error
@@ -800,7 +841,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 			fmt.Sprintf("PUB topic name %q is not valid", topicName))
 	}
 
-	bodyLen, err := readLen(client.Reader, client.lenSlice)//消息体, 在client 请求的下一行开始, 头4个字节是消息体长度
+	bodyLen, err := readLen(client.Reader, client.lenSlice) //消息体, 在client 请求的下一行开始, 头4个字节是消息体长度
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body size")
 	}
@@ -827,7 +868,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 	//get一下topic，如果没有会自动创建，并且开启topic的消息循环，开始从lookupd同步消息
 	topic := p.ctx.nsqd.GetTopic(topicName)
 	msg := NewMessage(topic.GenerateID(), messageBody) //GenerateID产生一个消息的唯一标识符
-	err = topic.PutMessage(msg) //实际上就是topic.put,将消息放入t.memoryMsgChan或者磁盘后就返回了。客户端流程结束.
+	err = topic.PutMessage(msg)                        //实际上就是topic.put,将消息放入t.memoryMsgChan或者磁盘后就返回了。客户端流程结束.
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_PUB_FAILED", "PUB failed "+err.Error())
 	}

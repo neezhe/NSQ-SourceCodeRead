@@ -285,7 +285,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			// 实际上这两个 channel 即为 client 所订阅的 channel的两个消息队列
 			memoryMsgChan = subChannel.memoryMsgChan
 			backendMsgChan = subChannel.backend.ReadChan()
-			flusherChan = nil // 同时，禁止从 flusherChan 取消息，因为才刚刚设置接收消息的 channel，缓冲区不会数据等待刷新
+			flusherChan = nil // 同时，禁止从 flusherChan 取消息，因为才刚刚准备好从channel取消息，此时不需要刷新缓冲区
 		} else {
 			// we're buffered (if there isn't any more data we should flush)...
 			// select on the flusher ticker channel, too
@@ -314,7 +314,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			// 将 subEventChan 重置为nil，原因表示之后不能从此通道中接收到消息
 			// 而置为nil的原因是，在SUB命令请求方法中第一行即为检查此客户端是否处于 stateInit 状态，
 			// 而调用 SUB 了之后，状态变为 stateSubscribed
-			subEventChan = nil
+			subEventChan = nil //表示再也不能被触发，除非有新的订阅，但是subChannel不为nil
 			// 当 nsqd 收到 client 发送的 IDENTIFY 请求时，会设置此 client的属性信息，然后将信息 push 到	identifyEventChan。
 			// 因此此处就会收到一条消息，同样将 identifyEventChan 重置为nil，这表明只能从 identifyEventChan 通道中接收一次消息，因为在一次连接过程中，只允许客户端初始化一次。
 			// 在IDENTIFY命令处理请求中可看到在第一行时进行了检查，若此时客户端的状态不是 stateInit，则会报错。
@@ -324,8 +324,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			// 而HeartbeatInterval用于定时向客户端发送心跳消息，
 			// SampleRate则用于确定此次从channel中取出的消息，是否应该发送给此客户端	，
 			//最后的MsgTimeout则用于设置消息投递并被处理的超时时间，最后会被设置成message.pri作为消息先后发送顺序的依据
-			// you can't IDENTIFY anymore
-			identifyEventChan = nil //IDENTIFY命令的时候会设置此identifyEventChan
+			identifyEventChan = nil //IDENTIFY命令的时候会设置此identifyEventChan,表示you can't IDENTIFY anymore
 			//根据客户端设置的信息，更新部分属性
 			outputBufferTicker.Stop()
 			if identifyData.OutputBufferTimeout > 0 {

@@ -575,11 +575,11 @@ func (n *NSQD) Notify(v interface{}) {
 		select {
 		case <-n.exitChan:
 		case n.notifyChan <- v:  //把新生成的topic或者channel放到notifyChan
-			if !persist {
+			if !persist { //若处于加载状态，则不持久化
 				return
 			}
 			n.Lock()
-			err := n.PersistMetadata() //持久化
+			err := n.PersistMetadata() //持久化channel和topic
 			if err != nil {
 				n.logf(LOG_ERROR, "failed to persist metadata - %s", err)
 			}

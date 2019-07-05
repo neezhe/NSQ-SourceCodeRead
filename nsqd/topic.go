@@ -24,7 +24,7 @@ type Topic struct {
 	sync.RWMutex //读写channel的时候要用到的锁
 
 	name              string
-	channelMap        map[string]*Channel //最主要的变量在于channelMap，这是这个topic的所有channel结构。
+	channelMap        map[string]*Channel //最主要的变量在于channelMap，这是这个topic拥有的所有channel集合。
 	backend           BackendQueue //backend是对应的持久化磁盘存储的队列。用interface表示一个结构体和方法的集合。
 	memoryMsgChan     chan *Message //memoryMsgChan 是这个topic对应的内存队列，即消息在内存中的通道
 	startChan         chan int // 消息处理循环开关
@@ -46,7 +46,7 @@ type Topic struct {
 
 //程序中存在以下几条链来调用NewTopic创建NewTopic：其一，nsqd.Start->nsqd.PersistMetadata->nsqd.GetTopic->NewTopic；
 // 其二，httpServer.getTopicFromQuery->nsqd.GetTopic->NewTopic；
-// 以及protocolV2.PUB/SUB->nsqd.GetTopic这三条调用路径。
+// 其三，protocolV2.PUB/SUB->nsqd.GetTopic这三条调用路径。
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
 	//初始化一个topic结构，并且设置其backend持久化结构，然后开启消息监听协程messagePump,处理消息。
 	t := &Topic{
@@ -65,7 +65,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 	//HasPrefix检查字符串前缀开头，HasSuffix检查字符串后缀结尾。
 	if strings.HasSuffix(topicName, "#ephemeral") { //临时topic以#ephemeral开头，没有持久化机制，只放入内存中，所以其backend其实是个黑洞，直接丢掉
 		t.ephemeral = true
-		t.backend = newDummyBackendQueue()//new一个不是真正意义上的BackendQueue,其实只是生成了一个go chan。真正意义的BackendQueue是下面的diskQueue。
+		t.backend = newDummyBackendQueue()//new一个不是真正意义上的BackendQueue,其实只是生成了一个go chan。真正意义的BackendQueue是下面的diskQueue。DummyBackendQueue表示不执行任何有效动作，显然这是考虑到临时的topic不用被持久化。
 	} else {
 		//正常的topic，需要设置其log函数，以及最重要的，backend持久化机制
 		dqLogf := func(level diskqueue.LogLevel, f string, args ...interface{}) {
@@ -87,9 +87,9 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		)
 	}
 
-	t.waitGroup.Wrap(t.messagePump) //异步开启消息循环messagePump协程，这是最重要的一步。阻塞等待被唤醒。
-
-	t.ctx.nsqd.Notify(t) //通知lookupd有新的topic产生了，在nsqd的main函数中运行了一个lookup的协程检测notifyChan中有没有数据，有的话就向nsqlookupd发送，tcp的方式
+	t.waitGroup.Wrap(t.messagePump) //异步开启消息监听循环messagePump协程，这是最重要的一步。阻塞等待被唤醒。
+	//下面的通知中，已经有了一个消息持久化的操作
+	t.ctx.nsqd.Notify(t) //通知lookupd有新的topic产生了，在nsqd的main函数中运行了一个nsqlookupd的协程检测notifyChan中有没有数据，有的话就向nsqlookupd发送，tcp的方式，然后发送Register命令。给所有的nsqlookupd实例。
 	return t
 }
 
@@ -365,7 +365,10 @@ func (t *Topic) messagePump() {
 exit:
 	t.ctx.nsqd.logf(LOG_INFO, "TOPIC(%s): closing ... messagePump", t.name)
 }
-
+//注意topic删除Delete()函数和topic关闭Close（）函数很相似，区别为：
+//一是前者还显式调用了nsqd.Notify以通知nsqlookupd有topic实例被删除，同时重新持久化元数据。
+// 二是前者还需要递归删除topic关联的channel集合，且显式调用了channel.Delete方法（此方法同topic.Delete方法相似）。
+// 三是前者还显式清空了memoryMsgChan和backend两个消息队列中的消息。因此，若只是关闭或退出topic，则纯粹退出messagePump消息处理循环，并将memoryMsgChan中的消息刷盘，最后关闭持久化存储消息队列。（方法调用链为：topic.Delete->topic.exit->nsqd.Notify->nsqd.PersistMetadata->chanel.Delete->topic.Empty->topic.backend.Empty->topic.backend.Delete，以及topic.Close->topic.exit->topic.flush->topic.backend.Close）
 // Delete empties the topic and all its channels and closes
 func (t *Topic) Delete() error {
 	return t.exit(true)

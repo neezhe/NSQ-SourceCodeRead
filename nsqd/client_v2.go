@@ -323,6 +323,7 @@ func (c *clientV2) IsReadyForMessages() bool {
 	c.ctx.nsqd.logf(LOG_DEBUG, "[%s] state rdy: %4d inflt: %4d", c, readyCount, inFlightCount)
 //如果readyCount <= 0成立，那么此时客户端无法接收任何一条消，所以此时不应向客户端发送消息。这个变量在客户端发送RDY命令后才会大于0
 //如果inFlightCount >= readyCount成立，那么正在发送的消息和客户端正在处理的消息数量已经超出了客户端的承受范围，所以此时也不应向客户端发送消息。
+//ReadyCount，即表示客户端能够处理消息的数量。
 	if inFlightCount >= readyCount || readyCount <= 0 {
 		return false
 	}

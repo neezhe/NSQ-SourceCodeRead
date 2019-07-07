@@ -119,6 +119,7 @@ func (c *ClusterInfo) GetLookupdTopics(lookupdHTTPAddrs []string) ([]string, err
 
 // GetLookupdTopicChannels returns a []string containing a union of all the channels
 // from all the given lookupd for the given topic
+//构建查询请求，并获得响应内容，最后对channel集合执行合并操作。
 func (c *ClusterInfo) GetLookupdTopicChannels(topic string, lookupdHTTPAddrs []string) ([]string, error) {
 	var channels []string
 	var lock sync.Mutex

@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	TLSNotRequired = iota
+	TLSNotRequired        = iota
 	TLSRequiredExceptHTTP
 	TLSRequired
 )
@@ -50,11 +50,11 @@ type NSQD struct {
 	opts atomic.Value //配置的结构体实例
 
 	dl        *dirlock.DirLock //这个文件锁貌似只在linux中用到。
-	isLoading int32 //nsqd 当前是否处于启动加载过程。这个也用于原子操作，但是他是基本类型，不需要再被atomic.Value包一下。
-	errValue  atomic.Value // 表示健康状况的错误值
-	startTime time.Time //记录这个实例生成的时间
+	isLoading int32            //nsqd 当前是否处于启动加载过程。这个也用于原子操作，但是他是基本类型，不需要再被atomic.Value包一下。
+	errValue  atomic.Value     // 表示健康状况的错误值
+	startTime time.Time        //记录这个实例生成的时间
 	//一个nsqd实例可以有多个Topic,使用sync.RWMutex加锁
-	topicMap map[string]*Topic  //一个NSQD中对应多个Topic集合，string表示的是Topic名称。
+	topicMap map[string]*Topic //一个NSQD中对应多个Topic集合，string表示的是Topic名称。
 
 	clientLock sync.RWMutex
 	clients    map[int64]Client //标识符id对应的client，来一个client就存储一下。存的是订阅了此nsqd所维护的topic的客户端实体
@@ -68,20 +68,21 @@ type NSQD struct {
 
 	poolSize int // queueScanWorker的数量，每个 queueScanWorker代表一个单独的goroutine，用于处理消息队列
 
-	notifyChan           chan interface{} //当channel或topic更新时（新增或删除），通知nsqlookupd服务更新对应的注册信息
-	optsNotificationChan chan struct{} // 当 nsqd 的配置发生变更时，可以通过此 channel 通知
-	exitChan             chan int // nsqd 退出开关
+	notifyChan           chan interface{}      //当channel或topic更新时（新增或删除），通知nsqlookupd服务更新对应的注册信息
+	optsNotificationChan chan struct{}         // 当 nsqd 的配置发生变更时，可以通过此 channel 通知
+	exitChan             chan int              // nsqd 退出开关
 	waitGroup            util.WaitGroupWrapper // 等待goroutine退出
 
 	ci *clusterinfo.ClusterInfo
 }
+
 //New的写法没有reciver
 func New(opts *Options) (*NSQD, error) {
 	var err error
 
 	dataPath := opts.DataPath //数据保存地址
-	if opts.DataPath == "" {// 为空就选择当前目录
-		cwd, _ := os.Getwd()//获取当前目录，类似Linux的pwd命令
+	if opts.DataPath == "" { // 为空就选择当前目录
+		cwd, _ := os.Getwd() //获取当前目录，类似Linux的pwd命令
 		dataPath = cwd
 	}
 	if opts.Logger == nil {
@@ -89,7 +90,7 @@ func New(opts *Options) (*NSQD, error) {
 		//LstdFlags= Ldate | Ltime,Lmicroseconds表示把时间的毫秒部分也输出出来
 		opts.Logger = log.New(os.Stderr, opts.LogPrefix, log.Ldate|log.Ltime|log.Lmicroseconds) //opts.Logger在n.logf中被用到
 	}
-    //记录以下当前时间和文件路径并把所有的map/chan都初始化一下。
+	//记录以下当前时间和文件路径并把所有的map/chan都初始化一下。
 	n := &NSQD{
 		startTime:            time.Now(),
 		topicMap:             make(map[string]*Topic), //make和new的功能相似都是分配空间，但是make只能用在slice/map/chan上，因为这3中类型在使用前必须进行初始化,结构体中只是类型声明，此处进行了初始化，相当于topicMap：=map[string]*Topic{}
@@ -102,12 +103,12 @@ func New(opts *Options) (*NSQD, error) {
 	httpcli := http_api.NewClient(nil, opts.HTTPClientConnectTimeout, opts.HTTPClientRequestTimeout) //设置http连接的超时时间，没有用默认的。
 	n.ci = clusterinfo.New(n.logf, httpcli)
 
-	n.lookupPeers.Store([]*lookupPeer{})//n.lookupPeers是atomic.Value类型，存放需要做并发保护的变量
-	n.swapOpts(opts)//原子操作，把opts存到NSQD.opts这个变量中。
+	n.lookupPeers.Store([]*lookupPeer{}) //n.lookupPeers是atomic.Value类型，存放需要做并发保护的变量
+	n.swapOpts(opts)                     //原子操作，把opts存到NSQD.opts这个变量中。
 	n.errValue.Store(errStore{})
 
-	err = n.dl.Lock()// 锁定数据目录（Exit函数中解锁）
-	if err != nil {//失败（锁不上）就退出，说明其他实例在访问
+	err = n.dl.Lock() // 锁定数据目录（Exit函数中解锁）
+	if err != nil { //失败（锁不上）就退出，说明其他实例在访问
 		return nil, fmt.Errorf("--data-path=%s in use (possibly by another instance of nsqd)", dataPath)
 	}
 	// 最大的压缩比率等级
@@ -157,7 +158,7 @@ func New(opts *Options) (*NSQD, error) {
 	n.logf(LOG_INFO, version.String("nsqd")) //由opt中的Logger规定打印到何出。
 	n.logf(LOG_INFO, "ID: %d", opts.ID)
 
-	n.tcpListener, err = net.Listen("tcp", opts.TCPAddress)//创建n.tcpListener，后续在这个listener上accept,accept的时候就是等待客户端连接（可阻塞或非阻塞）。
+	n.tcpListener, err = net.Listen("tcp", opts.TCPAddress) //创建n.tcpListener，后续在这个listener上accept,accept的时候就是等待客户端连接（可阻塞或非阻塞）。
 	if err != nil {
 		return nil, fmt.Errorf("listen (%s) failed - %s", opts.TCPAddress, err)
 	}
@@ -256,10 +257,10 @@ func (n *NSQD) Main() error {
 			exitCh <- err
 		})
 	}
-//tcp服务可以当生产者发消息也可以当消费者订阅消息，http服务可以用来当生产者发消息（不可以订阅）还可以提供给nsqadmin获取该nsqd本地topic和channel信息
+	//tcp服务可以当生产者发消息也可以当消费者订阅消息，http服务可以用来当生产者发消息（不可以订阅）还可以提供给nsqadmin获取该nsqd本地topic和channel信息
 	tcpServer := &tcpServer{ctx: ctx}
 	n.waitGroup.Wrap(func() {
-		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf))  //tcp服务，tcp的处理函数和nsqlookupd中的不一样。它可以PUB
+		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf)) //tcp服务，tcp的处理函数和nsqlookupd中的不一样。它可以PUB
 	})
 	httpServer := newHTTPServer(ctx, false, n.getOpts().TLSRequired == TLSRequired)
 	n.waitGroup.Wrap(func() {
@@ -267,7 +268,7 @@ func (n *NSQD) Main() error {
 	})
 	if n.tlsConfig != nil && n.getOpts().HTTPSAddress != "" {
 		httpsServer := newHTTPServer(ctx, true, true)
-		n.waitGroup.Wrap(func() {//它也能在第三个端口监听 HTTPS
+		n.waitGroup.Wrap(func() { //它也能在第三个端口监听 HTTPS
 			exitFunc(http_api.Serve(n.httpsListener, httpsServer, "HTTPS", n.logf)) //https服务
 		})
 	}
@@ -275,7 +276,7 @@ func (n *NSQD) Main() error {
 	n.waitGroup.Wrap(n.queueScanLoop) //用于进行msg重试，作用对象是inflight队列和deferred队列。保证消息“至少投递一次” 是由这个goroutine中的queueScanWorker不断的扫描 InFlightQueue 实现的。
 	//in-flight和deffered queue的。在具体的算法上的话参考了redis的随机过期算法。
 	n.waitGroup.Wrap(n.lookupLoop) //处理与nsqlookupd进程的交互。和lookupd建立长连接，每隔15s ping一下lookupd，新增或者删除topic的时候通知到lookupd，新增或者删除channel的时候通知到lookupd，动态的更新options
-	if n.getOpts().StatsdAddress != "" {  //如果配置了状态统计服务进程地址
+	if n.getOpts().StatsdAddress != "" { //如果配置了状态统计服务进程地址
 		n.waitGroup.Wrap(n.statsdLoop) //还有状态统计处理 go routine
 	}
 
@@ -285,8 +286,8 @@ func (n *NSQD) Main() error {
 
 type meta struct {
 	Topics []struct {
-		Name     string `json:"name"`
-		Paused   bool   `json:"paused"`
+		Name   string `json:"name"`
+		Paused bool   `json:"paused"`
 		Channels []struct {
 			Name   string `json:"name"`
 			Paused bool   `json:"paused"`
@@ -295,12 +296,12 @@ type meta struct {
 }
 
 func newMetadataFile(opts *Options) string {
-	return path.Join(opts.DataPath, "nsqd.dat")//将任意数量的路径元素拼接为单个路径返回，会自动忽略空格自动添加斜杠。
+	return path.Join(opts.DataPath, "nsqd.dat") //将任意数量的路径元素拼接为单个路径返回，会自动忽略空格自动添加斜杠。
 }
 
 func readOrEmpty(fn string) ([]byte, error) {
 	data, err := ioutil.ReadFile(fn) //在DecodeFile函数中也用到此函数。
-	if err != nil {//读完不为nil，则有错。
+	if err != nil { //读完不为nil，则有错。
 		if !os.IsNotExist(err) {
 			return nil, fmt.Errorf("failed to read metadata from %s - %s", fn, err)
 		}
@@ -328,12 +329,12 @@ func writeSyncFile(fn string, data []byte) error {
 //在扫描topic和channel的时候，分别会调用 GetTopic， GetChannel， 其实这两个函数如果在判断topic不存在的时候，会创建他，并且跟lookupd进行联系.
 func (n *NSQD) LoadMetadata() error {
 	//标识元数据已加载
-	atomic.StoreInt32(&n.isLoading, 1)//通过原子操作的方式把1写入n.isLoading
+	atomic.StoreInt32(&n.isLoading, 1) //通过原子操作的方式把1写入n.isLoading
 	defer atomic.StoreInt32(&n.isLoading, 0)
 	// 1. 构建 metadata 文件全路径， nsqd.dat，并读取文件内容
 	fn := newMetadataFile(n.getOpts())
 
-	data, err := readOrEmpty(fn)//读取元数据文件
+	data, err := readOrEmpty(fn) //读取元数据文件
 	if err != nil { //如果文件内容为空，则表明是首次启动，直接返回
 		return err
 	}
@@ -353,8 +354,8 @@ func (n *NSQD) LoadMetadata() error {
 			continue
 		}
 		//根据topic或channel的名称获取对应的实例的方法为nsqd.GetTopic和topic.GetChannel方法
-		topic := n.GetTopic(t.Name)//获取指向该topic对象的指针(nsqd/topic.go中Topic struct),如果topic不存在，会自动创建一个
-		if t.Paused {//topic暂停使用，标注到topic对象中
+		topic := n.GetTopic(t.Name) //获取指向该topic对象的指针(nsqd/topic.go中Topic struct),如果topic不存在，会自动创建一个
+		if t.Paused { //topic暂停使用，标注到topic对象中
 			topic.Pause() //设置paused属性，对于topic而言，若paused属性被设置，则它不会将由生产者发布的消息写入到关联的channel的消息队列。
 		}
 		for _, c := range t.Channels {
@@ -367,7 +368,7 @@ func (n *NSQD) LoadMetadata() error {
 				channel.Pause() //设置paused属性，对channel而言，若其paused属性被设置，则那些订阅了此channel的客户端不会被推送消息（这点在后面的源码中可以验证）
 			}
 		}
-		topic.Start()//最后调用topic.Start方法向topic.startChan通道中压入一条消息，消息会在topic.messagePump方法中被取出，以表明topic可以开始进入消息队列处理的主循环。
+		topic.Start() //最后调用topic.Start方法向topic.startChan通道中压入一条消息，消息会在topic.messagePump方法中被取出，以表明topic可以开始进入消息队列处理的主循环。
 	}
 	return nil
 }
@@ -385,7 +386,7 @@ func (n *NSQD) PersistMetadata() error { //是加载元数据的逆操作
 	js := make(map[string]interface{})
 	topics := []interface{}{}
 	for _, topic := range n.topicMap {
-		if topic.ephemeral {//如果是临时的，就不需要被持久化
+		if topic.ephemeral { //如果是临时的，就不需要被持久化
 			continue
 		}
 		topicData := make(map[string]interface{})
@@ -395,7 +396,7 @@ func (n *NSQD) PersistMetadata() error { //是加载元数据的逆操作
 		topic.Lock()
 		for _, channel := range topic.channelMap {
 			channel.Lock()
-			if channel.ephemeral {  // 临时的 channel 不被持久化
+			if channel.ephemeral { // 临时的 channel 不被持久化
 				channel.Unlock()
 				continue
 			}
@@ -419,11 +420,11 @@ func (n *NSQD) PersistMetadata() error { //是加载元数据的逆操作
 
 	tmpFileName := fmt.Sprintf("%s.%d.tmp", fileName, rand.Int())
 
-	err = writeSyncFile(tmpFileName, data)//写入临时文件
+	err = writeSyncFile(tmpFileName, data) //写入临时文件
 	if err != nil {
 		return err
 	}
-	err = os.Rename(tmpFileName, fileName)//文件重命名，如果fileName已存在，自动替换掉
+	err = os.Rename(tmpFileName, fileName) //文件重命名，如果fileName已存在，自动替换掉
 	if err != nil {
 		return err
 	}
@@ -446,12 +447,12 @@ func (n *NSQD) Exit() {
 	}
 
 	n.Lock()
-	err := n.PersistMetadata()//将元数据写入本地磁盘
+	err := n.PersistMetadata() //将元数据写入本地磁盘
 	if err != nil {
 		n.logf(LOG_ERROR, "failed to persist metadata - %s", err)
 	}
 	n.logf(LOG_INFO, "NSQ: closing topics")
-	for _, topic := range n.topicMap {//关闭topics
+	for _, topic := range n.topicMap { //关闭topics
 		topic.Close()
 	}
 	n.Unlock()
@@ -465,10 +466,10 @@ func (n *NSQD) Exit() {
 
 // GetTopic performs a thread safe operation
 // to return a pointer to a Topic object (potentially new)
-//消息获取函数，函数会先简单获取一把读锁看topic是否已经存在，如果已经存在直接返回，如果不存在就到后面的创建，初始化流程。
+//根据名称获取topic实例，函数会先简单获取一把读锁看topic是否已经存在，如果已经存在直接返回，如果不存在就到后面的创建，初始化流程。
 func (n *NSQD) GetTopic(topicName string) *Topic {
 	// most likely, we already have this topic, so try read lock first.
-	n.RLock() //先锁着确保topicMap中的内容不被改变，看一下有没有。读锁占用的情况下会阻止写，不会阻止读，多个 goroutine 可以同时获取读锁。
+	n.RLock() //先用读锁锁着确保topicMap中的内容不被改变，看一下有没有。读锁占用的情况下会阻止写，不会阻止读，多个 goroutine 可以同时获取读锁。
 	t, ok := n.topicMap[topicName]
 	n.RUnlock()
 	if ok { //如果NSQD找到了这个topic
@@ -478,11 +479,13 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 	n.Lock() //写锁，锁住整个Topic的创建过程。
 
 	t, ok = n.topicMap[topicName]
-	if ok {//还有种情况，就在刚才加写锁那一瞬间，有其他协程进来了，他new了一个，所以获取锁后还得判断一下是否存在
+	if ok { //还有种情况，就在刚才加写锁那一瞬间，有其他协程进来了，他new了一个，所以获取锁后还得判断一下是否存在
 		n.Unlock()
 		return t
 	}
-	deleteCallback := func(t *Topic) {//声明topic的删除函数
+	// 3. 创建删除指定 topic 的回调函数，即在删除指定的 topic 之前，需要做的一些清理工作，
+	// 比如关闭 与此 topic 所关联的channel，同时判断删除此 topic 所包含的所有 channel
+	deleteCallback := func(t *Topic) { //topic实例的删除回调函数
 		n.DeleteExistingTopic(t.name)
 	}
 	//创建一个topic结构，并且里面初始化好diskqueue, 加入到NSQD的topicmap里面
@@ -496,27 +499,31 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 	// topic is created but messagePump not yet started
 
 	// if loading metadata at startup, no lookupd connections yet, topic started after load
-	//“原子的”这个形容词就意味着，在这里读取value的值的同时，当前计算机中的任何CPU都不会进行其它的针对此值的读或写操作。
-	//这样的约束是受到底层硬件的支持的。
-	if atomic.LoadInt32(&n.isLoading) == 1 {//接受一个*int32类型的指针值，并会返回该指针值指向的那个值
+	//“原子的”这个形容词就意味着，在这里读取value的值的同时，当前计算机中的任何CPU都不会进行其它的针对此值的读或写操作。这样的约束是受到底层硬件的支持的。
+	if atomic.LoadInt32(&n.isLoading) == 1 { //若正处在启动过程，刚启动的时候LoadMetadata函数会
 		return t //当正在加载元数据的时候，还没有lookupd连接，topic必须在元数据加载完后才行
 	}
 
 	// if using lookupd, make a blocking call to get the topics, and immediately create them.
 	// this makes sure that any message received is buffered to the right channels
-	//lookupd里面存储所有之前的channel信息，所以这里加载一下，这样消息能不丢
+	//若nsqd并非出于启动过程，则还要进一步填充此topic所关联的channel，即nsqd实例向nsqlookupd实例查询指定topic所关联的channel集合（lookupd里面存储所有之前的channel信息），
+	// 然后更新topic.channelMap，同时也要更新topic.memoryMsgChan和topoc.backendChan结构（因为channel集合更新了）。
 	lookupdHTTPAddrs := n.lookupdHTTPAddrs() //首先拿到nsqlookupd服务的HTTP地址
 	if len(lookupdHTTPAddrs) > 0 {
+		// 5.1 从指定的 nsqlookupd 及 topic 所获取的 channel 的集合，nsqlookupd 存储所有之前此 topic 创建的 channel 信息，因此需要加载消息。
 		channelNames, err := n.ci.GetLookupdTopicChannels(t.name, lookupdHTTPAddrs) //然后根据这个地址拿到channel
 		if err != nil {
 			n.logf(LOG_WARN, "failed to query nsqlookupd for channels to pre-create for topic %s - %s", t.name, err)
 		}
 		for _, channelName := range channelNames {
-			if strings.HasSuffix(channelName, "#ephemeral") { //临时cahnnel不需要预先创建，用到的时候再创建就行
+			if strings.HasSuffix(channelName, "#ephemeral") { //临时channel不需要预先创建，用到的时候再创建就行
 				continue // do not create ephemeral channel with no consumer client
 			}
-			//预先创建一个channel，原因呢？为了让消息能够及时的入队.
-			//比如，我这个nsq重启了，那么重启的这时刻，需要加载曾经的所有channel，以备每一个channel的消息不丢。不然只能等着对方create了，不方便
+			// 5.3 根据 channel name获取 channel实例，且有可能是新建.
+			// 若是新建了一个 channel，则通知 topic的后台消息协程去处理channel的更新事件
+			// 之所以在查询到指定 channel 的情况下，新建 channel，是为了保证消息尽可能不被丢失，
+			// 比如在 nsq 重启时，需要在重启的时刻创建那些 channel，避免生产者生产的消息
+			// 不能被放到 channel 中，因为在这种情况下，只能等待消费者来指定的 channel 中获取消息才会创建。
 			t.GetChannel(channelName)
 		}
 	} else if len(n.getOpts().NSQLookupdTCPAddresses) > 0 {
@@ -524,6 +531,9 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 	}
 
 	// now that all channels are added, start topic messagePump
+	// 6. 启动了消息处理的循环，往 startChan 通道中 push 了一条消息，
+	// 此时会内存消息队列 memoryMsgChan，以及持久化的消息队列 backendChan 就开始工作。
+	// 即能处理内存中消息更新的的事件了。
 	t.Start() //通知Newtopic中的messagePump不要阻塞了，可以开始处理了
 	return t
 }
@@ -574,7 +584,7 @@ func (n *NSQD) Notify(v interface{}) {
 		// we do not block exit, see issue #123
 		select {
 		case <-n.exitChan:
-		case n.notifyChan <- v:  //把新生成的topic或者channel放到notifyChan
+		case n.notifyChan <- v: //把新生成的topic或者channel放到notifyChan
 			if !persist { //若处于加载状态，则不持久化
 				return
 			}
@@ -607,27 +617,33 @@ func (n *NSQD) channels() []*Channel {
 //
 // 	1 <= pool <= min(num * 0.25, QueueScanWorkerPoolMax)
 //
+// 调整 queueScanWorker 的数量
 func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, closeCh chan int) {
-	idealPoolSize := int(float64(num) * 0.25) // 校验启动的worker数量，默认理想为nsqd的所有channel数 * 1/4,
+	idealPoolSize := int(float64(num) * 0.25) // // 1. 根据 channel 的数量来设置合适的 pool size，默认理想为nsqd的所有channel数 * 1/4,
 	if idealPoolSize < 1 {
 		idealPoolSize = 1
 	} else if idealPoolSize > n.getOpts().QueueScanWorkerPoolMax {
 		idealPoolSize = n.getOpts().QueueScanWorkerPoolMax
 	}
+	// 2. 开启一个循环，直到理想的 pool size 同实际的 pool size 相同才退出。
+	// 否则，若理想值更大，则需扩展已有的 queueScanWorker 的数量，
+	// 即在一个单独的 goroutine 中调用一次 nsqd.queueScanWorker 方法（开启了一个循环）。
+	// 反之， 需要减少已有的 queueScanWorker 的数量，
+	// 即往 closeCh 中 push 一条消息，强制 queueScanWorker goroutine 退出
 	for {
-		// 当前启动的worker数等于设定的idealPoolSize，那么直接返回，
-		// 如果大于了idealPoolSize，通过closeCh关闭一个worker
-		// 如果未达到idealPoolSize，启动worker的goroutine
-		if idealPoolSize == n.poolSize {
+
+
+
+		if idealPoolSize == n.poolSize {// 当前启动的worker数等于设定的idealPoolSize，不需要任何的增加或减少，那么直接返回，
 			break
-		} else if idealPoolSize < n.poolSize {
+		} else if idealPoolSize < n.poolSize {// 如果大于了idealPoolSize，通过closeCh关闭一个worker
 			// queueScanWorker 多了, 减少一个
 			// 利用 chan 的特性, 向closeCh 推一个消息, 这样 所有的 worCh 就会随机有一个收到这个消息（这是go chan本身的语言特性）, 然后关闭
 			// 细节: 这里跟 exitCh 的用法不同, exitCh 是要告知 "所有的" looper 退出, 所以使用的是 close(exitCh) 的用法
 			// 而如果想 让其中 一个 退出, 则使用 exitCh <- 1 的用法
 			closeCh <- 1
 			n.poolSize--
-		} else {
+		} else {// 如果未达到idealPoolSize，启动worker的goroutine
 			// queueScanWorker 少了, 增加一个
 			n.waitGroup.Wrap(func() {
 				n.queueScanWorker(workCh, responseCh, closeCh) //worker的具体实现是queueScanWorker
@@ -639,24 +655,38 @@ func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, c
 
 // queueScanWorker receives work (in the form of a channel) from queueScanLoop
 // and processes the deferred and in-flight queues
+// 在 queueScanLoop 中处理 channel 的具体就是由 queueScanWorker 来负责。
+// 调用方法 queueScanWorker 即表示新增一个  queueScanWorker goroutine 来处理 channel。
+// 一旦开始工作 (从 workCh 中收到了信号， 即 dirty 的 channel 的数量达到阈值)，
+// 则循环处理 in-flight queue 和 deferred queue 中的消息，
+// 并将处理结果（即是否是 dirty channel）通过 reponseCh 反馈给 queueScanWorker。
 func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, closeCh chan int) {
 	for {
 		select {
+		// 开始处理两个消息队列中的消息
 		case c := <-workCh:
 			now := time.Now().UnixNano()
 			dirty := false
-			if c.processInFlightQueue(now) {// 实现消息至少被投递一次，目的就是把所有超时的消息再发一遍。
+			// 若返回true，则表明　in-flight 优先队列中有存在处理超时的消息，
+			// 因此将消息再次写入到　内存队列 memoryMsgChan　或 后端持久化　backend
+			// 等待消息被重新投递给消费者（重新被加入到 in-flight queue）
+			if c.processInFlightQueue(now) { // 实现消息至少被投递一次，目的就是把所有超时的消息再发一遍。
 				dirty = true //超时就是脏的
 			}
-			if c.processDeferredQueue(now) {// 实现延迟消息队列，也是按超时的堆排序来进行的。
+			// 若返回 true，则表明　deferred 优先队列中存在延时时间已到的消息，
+			// 因此需要将此消息从 deferred queue 中移除，
+			// 并将消息重新写入到　内存队列 memoryMsgChan　或后端持久化　backend
+			// 等待消息被正式投递给消费者 （正式被加入到 in-flight queue）
+			if c.processDeferredQueue(now) { // 实现延迟消息队列，也是按超时的堆排序来进行的。
 				dirty = true
 			}
+			// 报告 queueScanLoop 主循环，发现一个 dirty channel
 			responseCh <- dirty // 如果有过期消息的存在，则dirty
 			//注意这个地方, 跟 之前的close(exitChan) 用法不同
 			//这里是启动多个worker, 然后当判断worker太多了, 需要关闭一个多余的worker时
 			//给 closeCh <- 1 发个消息, 利用golang chan 随机分发的特性
 			//这样就会随机的关闭掉一个 worker, 也就是随机退出一个 queueScanWorker 的 循环
-		case <-closeCh:
+		case <-closeCh: // 退出处理循环，缩减 queueScanWorker 数量时，被调用
 			return
 		}
 	}
@@ -675,28 +705,38 @@ func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, close
 //
 // If QueueScanDirtyPercent (default: 25%) of the selected channels were dirty,
 // the loop continues without sleep.
+// 此函数用于处理正在发送的 in-flight 消息以及被延迟处理的 deferred 消息
+// 它管理了一个 queueScanWork pool，其默认数量为5。queueScanWorker 可以并发地处理 channel。
+// 它借鉴了Redis随机化超时的策略，即它每 QueueScanInterval 时间（默认100ms）就从本地的缓存队列中
+// 随机选择 QueueScanSelectionCount 个（默认20个） channels。其中 缓存队列每间隔  QueueScanRefreshInterval 还会被刷新。
 func (n *NSQD) queueScanLoop() {
-	workCh := make(chan *Channel, n.getOpts().QueueScanSelectionCount)//任务派发 队列
-	responseCh := make(chan bool, n.getOpts().QueueScanSelectionCount)//任务结果 队列
-	closeCh := make(chan int) // 用来优雅关闭
+	// 1. 获取随机选择的 channel 的数量，以及队列扫描的时间间隔，及队列刷新时间间隔
+	workCh := make(chan *Channel, n.getOpts().QueueScanSelectionCount) //任务派发 队列
+	responseCh := make(chan bool, n.getOpts().QueueScanSelectionCount) //任务结果 队列
+	closeCh := make(chan int)                                          // 用来优雅关闭
 	// 利用Ticket来定期开始任务和调整worker
-	workTicker := time.NewTicker(n.getOpts().QueueScanInterval)
-	refreshTicker := time.NewTicker(n.getOpts().QueueScanRefreshInterval)
-
+	workTicker := time.NewTicker(n.getOpts().QueueScanInterval)           //表示每隔QueueScanInterval的时间（默认100ms），nsqd随机挑选QueueScanSelectionCount数量的channel执行dirty channel的计数统计
+	refreshTicker := time.NewTicker(n.getOpts().QueueScanRefreshInterval) //refreshTicker每过QueueScanRefreshInterval时间（默认5s）就调整queueScanWorker pool的大小。之后，queueScanLoop的任务是处理发送中的消息队列(in-flight queue)，以及被延迟发送的消息队列(deferred queue)两个优先级消息队列中的消息。
+	// 2. 获取 nsqd 所包含的 channel 集合，一个 topic 包含多个 channel，而一个 nsqd 实例可包含多个 topic 实例
 	channels := n.channels()
-	n.resizePool(len(channels), workCh, responseCh, closeCh)// 调整worker，调整队列扫描任务的worker的数量
-
+	n.resizePool(len(channels), workCh, responseCh, closeCh) // 调整worker，调整队列扫描任务的worker的数量
+	// 3. 这个循环中的逻辑就是依据配置参数，反复处理 nsqd 所维护的 topic 集合所关联的 channel 中的消息
+	// 即循环处理将 channel 从 topic 接收到的消息，发送给订阅了对应的 channel 的客户端
 	for {
 		select {
-		case <-workTicker.C:// 开始一次任务的派发
+		// 3.1 每过 QueueScanInterval 时间（默认100ms），
+		// 则开始随机挑选 QueueScanSelectionCount 个 channel。转到 loop: 开始执行
+		case <-workTicker.C: // 开始一次任务的派发
 			if len(channels) == 0 {
 				continue
 			}
-		case <-refreshTicker.C:// 重新调整 worker 数量
+		// 3.2 每过 QueueScanRefreshInterval 时间（默认5s），
+		// 则调整 pool 的大小，即调整开启的 queueScanWorker 的数量为 pool 的大小
+		case <-refreshTicker.C: // 重新调整 worker 数量
 			channels = n.channels()
 			n.resizePool(len(channels), workCh, responseCh, closeCh)
 			continue
-		case <-n.exitChan:
+		case <-n.exitChan:// 3.3 nsqd 已退出
 			goto exit
 		}
 
@@ -704,19 +744,26 @@ func (n *NSQD) queueScanLoop() {
 		if num > len(channels) {
 			num = len(channels)
 		}
-
+		// 3.4 利用 util.UniqRands，随机选取 num个（QueueScanSelectionCount 默认20个）channel
+		// 将它们 push 到 workCh 管道，queueScanWorker 中会收到此消息，
+		// 然后立即处理 in-flight queue 和 deferred queue 中的消息。
+		// 注意，因为这里是随机抽取 channel 因此，有可能被选中的 channel 中并没有消息
 	loop:
 		for _, i := range util.UniqRands(num, len(channels)) { // 随机取出num个channel, 派发给 worker 进行 扫描
 			workCh <- channels[i]
 		}
 		// 接收 扫描结果, 统一 有多少 channel 是 "脏" 的
+		// 3.5 统计 dirty 的 channel 的数量， responseCh管道在上面的 nsqd.resizePool方法中
+		// 传递给了 len(channels) * 0.25 个 queueScanWorker。
+		// 它们会在循环中反复查看两个消息优先级队列中是否有消息等待被处理：
+		// 即查看 inFlightPQ 和 deferredPQ。
 		numDirty := 0
 		for i := 0; i < num; i++ {
 			if <-responseCh {
 				numDirty++
 			}
 		}
-		// 假如 "脏" 的 "比例" 大于阀值, 则不等待 workTicker
+		// 假如 "脏" 的 "比例" 大于配置的 QueueScanDirtyPercent（默认为25%）, 则不等待 workTicker
 		// 马上进行下一轮 扫描
 		if float64(numDirty)/float64(num) > n.getOpts().QueueScanDirtyPercent {
 			goto loop

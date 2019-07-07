@@ -12,6 +12,8 @@ type Item struct {
 
 // this is a priority queue as implemented by a min heap
 // ie. the 0th element is the *lowest* value
+// 最小堆优先级队列，其操作接口同 in_flight_queue （nsqd/in_flight_queue.go）类似
+// 不同的是它借用了标准库 container/heap/heap.go
 type PriorityQueue []*Item
 
 func New(capacity int) PriorityQueue {
@@ -69,7 +71,7 @@ func (pq *PriorityQueue) PeekAndShift(max int64) (*Item, int64) {
 	if item.Priority > max {
 		return nil, item.Priority - max
 	}
-	heap.Remove(pq, 0)
+	heap.Remove(pq, 0) // Remove 方法中重新调整了堆的结构
 
 	return item, 0
 }

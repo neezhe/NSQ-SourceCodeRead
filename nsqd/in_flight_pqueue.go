@@ -1,7 +1,8 @@
 package nsqd
 
 type inFlightPqueue []*Message
-
+// 使用一个 heap 堆来存储所有的 message，根据 Message.pri（即消息处理时间的 deadline 时间戳）来组织成一个小顶堆，
+// 非线程安全，需要 caller 来保证线程安全
 func newInFlightPqueue(capacity int) inFlightPqueue {
 	return make(inFlightPqueue, 0, capacity)
 }
@@ -54,7 +55,9 @@ func (pq *inFlightPqueue) Remove(i int) *Message {
 	*pq = (*pq)[0 : n-1]
 	return x
 }
-
+// 若堆顶元素的 pri 大于此时的 timestamp，则返回　nil, 及二者的差值
+// 此种情况表示还未到处理超时时间，即 nsqd 还不需要将它重新加入发送队列。
+// 否则返回堆顶元素, 0，表示堆顶元素已经被客户端处理超时了，需要重新加入发送队列
 func (pq *inFlightPqueue) PeekAndShift(max int64) (*Message, int64) {
 	if len(*pq) == 0 {
 		return nil, 0

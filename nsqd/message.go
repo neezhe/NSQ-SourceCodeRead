@@ -14,19 +14,19 @@ const (
 )
 
 type MessageID [MsgIDLength]byte
-
-type Message struct {
-	ID        MessageID
-	Body      []byte
-	Timestamp int64
-	Attempts  uint16
+//网络传输的消息包格式构成为：Timestamp(8byte) + Attempts(2byte) + MessageID(16byte) + MessageBody(N-byte)。
+type Message struct { //代表生产者或者消费者的一条消息，是nsq消息队列系统中最基本的元素
+	ID        MessageID  // 消息 ID
+	Body      []byte // 消息体
+	Timestamp int64 // 当前时间戳
+	Attempts  uint16 // 消息重复投递次数（一旦消息投递次数过多，客户端可针对性地做处理）
 
 	// for in-flight handling
-	deliveryTS time.Time
-	clientID   int64
-	pri        int64
-	index      int
-	deferred   time.Duration
+	deliveryTS time.Time // 投递消息的时间戳
+	clientID   int64 // 接收此消息的 client ID
+	pri        int64 // 消息的优先级（即消息被处理的 deadline 时间戳）
+	index      int // 当前消息在 priority queue 中的索引
+	deferred   time.Duration // 若消息被延迟，则为延迟时间
 }
 
 func NewMessage(id MessageID, body []byte) *Message {

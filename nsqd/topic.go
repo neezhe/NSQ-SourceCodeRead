@@ -30,7 +30,7 @@ type Topic struct {
 	startChan         chan int // 消息处理循环开关
 	exitChan          chan int // topic 消息处理循环退出开关
 	channelUpdateChan chan int // 消息更新的开关
-	waitGroup         util.WaitGroupWrapper // waitGroup 的一个 wrapper
+	waitGroup         util.WaitGroupWrapper // waitGroup 的一个 wrapper，这个是用来等待这个topic的所有消息处理循环messagePump循环退出
 	exitFlag          int32  //这个标志是在删除一个topic时，先设置这个，然后再进行真实删除的。PutMessage的时候也会检查这状态，如果正在进行topic删除，那直接返回不入队。
 	idFactory         *guidFactory // 用于生成客户端实例的ID
 
@@ -88,7 +88,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 	}
 
 	t.waitGroup.Wrap(t.messagePump) //异步开启消息监听循环messagePump协程，这是最重要的一步。阻塞等待被唤醒。
-	//下面的通知中，已经有了一个消息持久化的操作
+	//下面的通知中，已经有一个持久化的操作
 	t.ctx.nsqd.Notify(t) //通知lookupd有新的topic产生了，在nsqd的main函数中运行了一个nsqlookupd的协程检测notifyChan中有没有数据，有的话就向nsqlookupd发送，tcp的方式，然后发送Register命令。给所有的nsqlookupd实例。
 	return t
 }
@@ -108,8 +108,8 @@ func (t *Topic) Exiting() bool {
 // GetChannel performs a thread safe operation
 // to return a pointer to a Channel object (potentially new)
 // for the given Topic
+// 根据 channel 名称返回 channel 实例，且有可能是新建的。线程安全方法。
 func (t *Topic) GetChannel(channelName string) *Channel {
-	//获取topic的channel，如果之前没有是新建的，则通知channelUpdateChan去刷新订阅状态
 	t.Lock()
 	channel, isNew := t.getOrCreateChannel(channelName) //拿到channel
 	t.Unlock()
@@ -117,7 +117,8 @@ func (t *Topic) GetChannel(channelName string) *Channel {
 	if isNew {
 		// update messagePump state
 		select {
-		//通知去刷新订阅状态，如果没有channel了就不用发布了
+		// 若此 channel为新创建的，则 push 消息到 channelUpdateChan中，
+		// 使(t *Topic) messagePump中的memoryMsgChan 及 backend 刷新状态
 		case t.channelUpdateChan <- 1: //另一端是(t *Topic) messagePump
 		case <-t.exitChan:
 		}
@@ -127,10 +128,12 @@ func (t *Topic) GetChannel(channelName string) *Channel {
 }
 
 // this expects the caller to handle locking
+// 根据 channel 名称获取指定的 channel，若不存在，则创建一个新的 channel 实例。非线程安全
 func (t *Topic) getOrCreateChannel(channelName string) (*Channel, bool) {
 	channel, ok := t.channelMap[channelName] //获取一个channel，如果没有就新建它
 	//调用方已经对topic加锁了t.Lock()， 所以不需要加锁
 	if !ok {
+		// 注册 channel 被删除时的回调函数
 		deleteCallback := func(c *Channel) {
 			t.DeleteExistingChannel(c.name)
 		}
@@ -184,8 +187,8 @@ func (t *Topic) DeleteExistingChannel(channelName string) error {
 
 	return nil
 }
-//消息的发送操作是二进制的PUB或者“/pub?topic=testtopic” 接口，后面其实都是调用的(t *Topic) PutMessage函数去真正发送一条消息到一个topic。
-// PutMessage writes a Message to the queue
+// 此方法由 httpServer.PUB 或 protocolV2.PUB 方法中调用，即生产者通过 http/tcp 投递消息到 topic
+//消息的发送操作是二进制的TCP PUB或者http的“/pub?topic=testtopic” 接口，后面其实都是调用的(t *Topic) PutMessage函数去真正发送一条消息到一个topic。
 func (t *Topic) PutMessage(m *Message) error {
 	t.RLock()
 	defer t.RUnlock()
@@ -200,6 +203,7 @@ func (t *Topic) PutMessage(m *Message) error {
 	if err != nil {
 		return err
 	}
+	// 3. 更新当前 topic 所对应的消息数量以及消息总大小
 	atomic.AddUint64(&t.messageCount, 1) //消息计数
 	atomic.AddUint64(&t.messageBytes, uint64(len(m.Body))) //记录消息长度
 	return nil
@@ -239,8 +243,8 @@ func (t *Topic) put(m *Message) error {
 	select {
 	case t.memoryMsgChan <- m: //将这条消息直接塞入内存管道
 	default: //如果内存消息管道满了(memoryMsgChan的容量由 getOpts().MemQueueSize设置)，那么就放入到后面的持久化存储里面
-		b := bufferPoolGet() // 复用buffer，减少对象生成，阅读一下sync.Pool包
-		err := writeMessageToBackend(b, m, t.backend) //backend是创建topic的时候建立的diskqueue
+		b := bufferPoolGet() //从缓冲池中获取缓冲，可复用buffer，减少对象生成，阅读一下sync.Pool包
+		err := writeMessageToBackend(b, m, t.backend) //将消息写入持久化消息队列，backend是创建topic的时候建立的diskqueue
 		bufferPoolPut(b)// 放回缓存池
 		t.ctx.nsqd.SetHealth(err)
 		if err != nil {
@@ -259,8 +263,7 @@ func (t *Topic) Depth() int64 {
 
 // messagePump selects over the in-memory and backend queue and
 // writes messages to every channel for this topic
-//下面的select就会检测到有消息到来
-//主要是接收来自backend和memoryMsgChan的消息，然后转发给每一个channel
+//监听 message 的更新的一些状态，以及时将消息持久化，同时写入到此 topic 对应的channel
 func (t *Topic) messagePump() {
 	var msg *Message
 	var buf []byte
@@ -270,6 +273,8 @@ func (t *Topic) messagePump() {
 	var backendChan chan []byte
 
 	// do not pass messages before Start(), but avoid blocking Pause() or GetChannel()
+	// 1. 等待开启 topic 消息处理循环，即等待调用 topic.Start，
+	// 在 nsqd.GetTopic 和 nsqd.LoadMetadata 方法中调用
 	for {
 		select {
 		case <-t.channelUpdateChan:
@@ -288,8 +293,8 @@ func (t *Topic) messagePump() {
 		chans = append(chans, c)
 	}
 	t.RUnlock()
-	if len(chans) > 0 && !t.IsPaused() { //topic的mesasgePump检测到有新的消息写入的时候就开始工作了，
-		//从memoryMsgChan/backend(disk)读取消息投递到channel对应的chan中。前者是有缓冲的后者没有。
+	//若topic.channelMap 存在 channel，且 topic 未被 paused，则初始化两个通道 memoryMsgChan，backendChan
+	if len(chans) > 0 && !t.IsPaused() {
 		memoryMsgChan = t.memoryMsgChan //是topic.PutMessage在源源不断的向memoryMsgChan中写数据，memoryMsgChan是在NewTopic的时候设置的大小
 		backendChan = t.backend.ReadChan() //下面要从DiskQueue.ReadChan中取消息，在new一个diskqueue的时候会把从文件中读取信息到readChan
 	}
@@ -299,23 +304,22 @@ func (t *Topic) messagePump() {
 	// 如果topic对应的channel发生了变化，则更新channel信息
 	for {
 		select {
-		case msg = <-memoryMsgChan: //内存队列,注意每个case互不干扰，msg的值不会进入到下面的一个case中
+		case msg = <-memoryMsgChan: //内存队列,注意每个case互不干扰，msg的值不会进入到下面backendChan的case中
 		case buf = <-backendChan: //磁盘队列（文件里）
 			msg, err = decodeMessage(buf) //磁盘读出的消息要转换成和内存中一致的消息格式，即message的结构体形式。
 			if err != nil {
 				t.ctx.nsqd.logf(LOG_ERROR, "failed to decode message - %s", err)
 				continue
 			}
-		case <-t.channelUpdateChan: //只在更新的时候才加锁获取channel,这样就避免了一次循环就加锁获取的低效操作。
-			//上面避免锁竞争, 缓存了这个topic已存在的所有channel
-			//假如更新channel，会发一个 消息过来,重新读取 channel
+		case <-t.channelUpdateChan: //只在channel更新的时候才加锁获取channel,这样就避免了一次循环就加锁获取的低效操作。
+			//上面避免锁竞争, 缓存了这个topic已存在的所有channel。假如更新channel，会通知过来,需要重新初始化 memoryMsgChan及 backendChan
 			chans = chans[:0]
 			t.RLock()
 			for _, c := range t.channelMap {
 				chans = append(chans, c)
 			}
 			t.RUnlock()
-			if len(chans) == 0 || t.IsPaused() {
+			if len(chans) == 0 || t.IsPaused() { //重新初始化
 				memoryMsgChan = nil
 				backendChan = nil
 			} else {
@@ -323,6 +327,8 @@ func (t *Topic) messagePump() {
 				backendChan = t.backend.ReadChan()
 			}
 			continue
+			// 当收到 pause 消息时，则将 memoryMsgChan及backendChan置为 nil，注意不能 close，
+			// 二者的区别是 nil的chan不能接收消息了，但不会报错。而若从一个已经 close 的 chan 中尝试取消息，则会 panic。
 		case <-t.pauseChan:
 			if len(chans) == 0 || t.IsPaused() {
 				memoryMsgChan = nil
@@ -332,10 +338,10 @@ func (t *Topic) messagePump() {
 				backendChan = t.backend.ReadChan()
 			}
 			continue
-		case <-t.exitChan:
+		case <-t.exitChan: // 3.4 当调用 topic.exit 时会收到信号，以终止 topic 的消息处理循环
 			goto exit
 		}
-		// 3. 往该tpoic对应的每个channel写入message(如果是deffermessage
+		// 3. 往该tpoic对应的每个channel写入message，因为每个 channel 需要一个独立 msg，因此需要在拷贝时需要创建 msg 的副本，，针对 msg 是否需要被延时投递来放到不同的队列(如果是deffermessage
 		// 的话放到对应的deffer queue中，否则放到该channel对应的memoryMsgChan中)。
 		for i, channel := range chans { //遍历每个channel,然后将消息一个个发送到channel的流程里面.看到没，此处就是将一条topic的消息多播到多有的channel,然后消费者通过订阅的channel读取，如果一个channel上面有多个consumer，则随机。
 			//到这里只有一种可能，有新消息来了, 那么遍历channel，调用PutMessage发送消息
@@ -344,16 +350,17 @@ func (t *Topic) messagePump() {
 			// needs a unique instance but...
 			// fastpath to avoid copy if its the first channel
 			// (the topic already created the first copy)
-			if i > 0 {
+			if i > 0 {// 若此 topic 只有一个 channel，则不需要显式地拷贝了，下面就是在拷贝。
 				chanMsg = NewMessage(msg.ID, msg.Body)
 				chanMsg.Timestamp = msg.Timestamp
 				chanMsg.deferred = msg.deferred
 			}
+			// 将 msg push 到 channel 所维护的延时消息队列 deferred queue，等待消息的延时时间走完后，会把消息进一步放入到 in-flight queue 中
 			if chanMsg.deferred != 0 { //如果是defered延迟投递的消息，那么放入特殊的队列
 				channel.PutMessageDeferred(chanMsg, chanMsg.deferred)
 				continue
 			}
-			err := channel.PutMessage(chanMsg) //把消息放到channel中是消息发送的最后一环，消息还是被放到磁盘或者内存。
+			err := channel.PutMessage(chanMsg) // 将 msg push 到普通消息队列 in-flight queue
 			if err != nil {
 				t.ctx.nsqd.logf(LOG_ERROR,
 					"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",
@@ -366,10 +373,15 @@ exit:
 	t.ctx.nsqd.logf(LOG_INFO, "TOPIC(%s): closing ... messagePump", t.name)
 }
 //注意topic删除Delete()函数和topic关闭Close（）函数很相似，区别为：
-//一是前者还显式调用了nsqd.Notify以通知nsqlookupd有topic实例被删除，同时重新持久化元数据。
+//一是前者还显式调用了nsqd.Notify以通知nsqlookupd删除topic实例的注册信息，同时重新持久化元数据。
 // 二是前者还需要递归删除topic关联的channel集合，且显式调用了channel.Delete方法（此方法同topic.Delete方法相似）。
-// 三是前者还显式清空了memoryMsgChan和backend两个消息队列中的消息。因此，若只是关闭或退出topic，则纯粹退出messagePump消息处理循环，并将memoryMsgChan中的消息刷盘，最后关闭持久化存储消息队列。（方法调用链为：topic.Delete->topic.exit->nsqd.Notify->nsqd.PersistMetadata->chanel.Delete->topic.Empty->topic.backend.Empty->topic.backend.Delete，以及topic.Close->topic.exit->topic.flush->topic.backend.Close）
+// 三是前者还显式清空了memoryMsgChan和backend两个消息队列中的消息。
+// 因此，若只是关闭或退出topic，则纯粹退出messagePump消息处理循环，并将memoryMsgChan中的消息刷盘，需要持久化所有未被处理/消费的消息，然后再关闭所有的 channel，退出。
+// （方法调用链分别为：topic.Delete->topic.exit->nsqd.Notify->nsqd.PersistMetadata->chanel.Delete->topic.Empty->topic.backend.Empty->topic.backend.Delete，以及topic.Close->topic.exit->topic.flush->topic.backend.Close）
 // Delete empties the topic and all its channels and closes
+
+//哪些地方会调用Delete方法。其一，httpServer.doDeleteTopic->nsqd.DeleteExistingTopic->topic.Delete；
+// 其二，nsqd.GetTopic->nsqd.DeleteExistingTopic->topic.Delete。而对于topic.Close方法，则比较直接：nsqd.Exit->topic.Close。
 func (t *Topic) Delete() error {
 	return t.exit(true)
 }
@@ -382,29 +394,29 @@ func (t *Topic) Close() error {
 func (t *Topic) exit(deleted bool) error {
 	//消息的删除函数，大概做的事情为：1.通知lookupd； 2.关闭topic.exitChan管道让topic.messagePump退出；
 	// 3.循环删除其channelMap列表； 4.将内存未消费的消息持久化；
-	//先判断一下状态看能否继续删除
 
-	if !atomic.CompareAndSwapInt32(&t.exitFlag, 0, 1) {
+	if !atomic.CompareAndSwapInt32(&t.exitFlag, 0, 1) { // 1. 保证目前还处于运行的状态
 		return errors.New("exiting")
 	}
 
-	if deleted {
+	if deleted { // 2. 当被　Delete　调用时，则需要先通知 lookupd 删除其对应的注册信息
 		t.ctx.nsqd.logf(LOG_INFO, "TOPIC(%s): deleting", t.name)
 
 		// since we are explicitly deleting a topic (not just at system exit time)
 		// de-register this from the lookupd
-		t.ctx.nsqd.Notify(t) //通知lookupLoop协程进行处理，有增删topic了，需要进行UnRegister 后者 Register topic了
+		t.ctx.nsqd.Notify(t) //通知lookupLoop协程进行处理，有topic更新了，并重新持久化元数据。
 	} else {
 		t.ctx.nsqd.logf(LOG_INFO, "TOPIC(%s): closing", t.name)
 	}
-	//关闭管道，这样其他在这个topic上的协程就会退出, 比如topic.messagePump 就会退出topic消息循环
+	// 3. 关闭 exitChan，保证所有的循环全部会退出，比如消息处理循环 messagePump 会退出
 	close(t.exitChan)
+	// 4. 同步等待消息处理循环 messagePump 方法的退出，才继续执行下面的操作（只有消息处理循环退出后，才能删除对应的 channel集合）。
 	//下面其实是在等待启动消息循环的代码退出： t.waitGroup.Wrap(func() { t.messagePump() }), 这样不会再有在这个topic上的操作了
 	// synchronize the close of messagePump()
 	t.waitGroup.Wait()
 //Wait等待协程退出后，就开始清理channel等信息了。接下来准备清空对应channel的数据 ,
 // 看是否是要删除topic来决定调用delete还是close, 这个处理类似topic的处理
-	if deleted {
+	if deleted { // 4. 若是被 Delete 方法调用，则需要清空 topic 所包含的 channel（同 topic 的操作类似）
 		t.Lock()
 		for _, channel := range t.channelMap {
 			delete(t.channelMap, channel.name)
@@ -417,7 +429,8 @@ func (t *Topic) exit(deleted bool) error {
 		//然后在通知后面的disqqueue进行清理删除
 		return t.backend.Delete()
 	}
-
+	// 5. 否则若是被 Close 方法调用，则只需要关闭所有的 channel，
+	// 不会将所有的 channel 从 topic 的 channelMap 中删除
 	// close all the channels
 	for _, channel := range t.channelMap {
 		err := channel.Close()
@@ -428,11 +441,11 @@ func (t *Topic) exit(deleted bool) error {
 	}
 
 	// write anything leftover to disk
-	//如果还有内存消息没处理完需要写入后端的持久化设备
+	//如果还有内存消息没处理完需要写入后端的持久化设备，// 6. 将内存中的消息，即 t.memoryMsgChan 中的消息刷新到持久化存储
 	t.flush()
 	return t.backend.Close()
 }
-
+// 清空内存消息队列和持久化存储消息队列中的消息
 func (t *Topic) Empty() error {
 	for {
 		select {
@@ -445,7 +458,7 @@ func (t *Topic) Empty() error {
 finish:
 	return t.backend.Empty()
 }
-
+// 刷新内存消息队列即 t.memoryMsgChan 中的消息到持久化存储 backend
 func (t *Topic) flush() error {
 	var msgBuf bytes.Buffer
 

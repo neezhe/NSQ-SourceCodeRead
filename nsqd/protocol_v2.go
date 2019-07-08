@@ -637,10 +637,12 @@ func (p *protocolV2) CheckAuth(client *clientV2, cmd, topicName, channelName str
 	}
 	return nil
 }
-
+//客户端在指定的 topic 上订阅消息
 //消费者使用TCP协议，发送SUB topic channel命令订阅某个channel，NSQD会获取需要订阅的topic和channel，然后将client添加到相应的channel中，通知c.SubEventChan
-//记录一下订阅的topic信息，以及通知后台协程去实际订阅管道
 func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
+	// 1.做一些校验工作，只有当 client 处于 stateInit 状态才能订阅某个 topic 的 channel，
+	// 换言之，当一个client订阅了某个channel之后，它的状态会被更新为stateSubscribed，因此不能再订阅 channel 了。
+	// 总而言之，一个 client 只能订阅一个 channel
 	if atomic.LoadInt32(&client.State) != stateInit {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot SUB in current state")
 	}
@@ -652,7 +654,7 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	if len(params) < 3 {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "SUB insufficient number of parameters")
 	}
-
+	// 2. 获取订阅的 topic 名称、channel 名称，并对它们进行校验
 	topicName := string(params[1])
 	if !protocol.IsValidTopicName(topicName) {
 		return nil, protocol.NewFatalClientErr(nil, "E_BAD_TOPIC",
@@ -664,7 +666,7 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, protocol.NewFatalClientErr(nil, "E_BAD_CHANNEL",
 			fmt.Sprintf("SUB channel name %q is not valid", channelName))
 	}
-
+	// 3. 同时检查此客户端是否有订阅的权限
 	if err := p.CheckAuth(client, "SUB", topicName, channelName); err != nil {
 		return nil, err
 	}
@@ -672,17 +674,19 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	// This retry-loop is a work-around for a race condition, where the
 	// last client can leave the channel between GetChannel() and AddClient().
 	// Avoid adding a client to an ephemeral channel / topic which has started exiting.
+	// 此循环是为了避免 client订阅到正在退出的 ephemeral属性的 channel 或 topic
 	var channel *Channel
 	for {
-		//获取topic和channel
+		//获取topic和channel实例
 		topic := p.ctx.nsqd.GetTopic(topicName)
 		channel = topic.GetChannel(channelName)
+		// 5. 调用 channel的 AddClient 方法添加指定客户端
 		if err := channel.AddClient(client.ID, client); err != nil { //将client加入到相应的channel中
 			return nil, protocol.NewFatalClientErr(nil, "E_TOO_MANY_CHANNEL_CONSUMERS",
 				fmt.Sprintf("channel consumers for %s:%s exceeds limit of %d",
 					topicName, channelName, p.ctx.nsqd.getOpts().MaxChannelConsumers))
 		}
-
+		// 6. 若此 channel 或 topic 为ephemeral，并且channel或topic正在退出，则移除此client
 		if (channel.ephemeral && channel.Exiting()) || (topic.ephemeral && topic.Exiting()) {
 			channel.RemoveClient(client.ID)
 			time.Sleep(1 * time.Millisecond)
@@ -690,16 +694,21 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 		}
 		break
 	}
-	atomic.StoreInt32(&client.State, stateSubscribed)
-	//下面这行很重要，设置本client说订阅的channel，这样接下来的SubEventChan就会由当前clienid开启的后台协程来订阅这个channel的消息,
+	atomic.StoreInt32(&client.State, stateSubscribed)// 6. 修改客户端的状态为 stateSubscribed
+	//下面这行很重要，设置本client所订阅的channel，这样接下来的SubEventChan就会由当前clienid开启的后台协程来订阅这个channel的消息。
+	// 7. 这一步比较关键，将订阅的 channel实例传递给了client，同时将channel发送到了client.SubEventChan 通道中。
+	// 后面的 SubEventChan 就会使得当前的 client在一个 goroutine中订阅这个 channel 的消息
 	client.Channel = channel //在client中也记录下这个channel
 	// update message pump
 	//通知后台订阅协程来订阅消息,包括内存管道和磁盘
-	client.SubEventChan <- channel //此处把整个channel结构体作为chan传递，主要目的只是通知客户端的messagePump不要阻塞了。
+	client.SubEventChan <- channel
 
-	return okBytes, nil
+	return okBytes, nil // 9. 返回 ok
 }
-
+//在消费者未发送RDY命令给服务端之前，服务端不会推送消息给客户端，因为此时服务端认为消费者还未准备好接收消息（由方法client.IsReadyForMessages实现）。
+//另外，此RDY命令的含义，简而言之，当RDY 100即表示客户端具备一次性接收并处理100个消息的能力，因此服务端此时更可推送100条消息给消费者（如果有的话），
+//每推送一条消息，就要修改client.ReadyCount的值。
+// 而RDY命令请求的处理非常简单，即通过client.SetReadyCount方法直接设置client.ReadyCount的值。注意在这之前的两个状态检查动作。
 func (p *protocolV2) RDY(client *clientV2, params [][]byte) ([]byte, error) {
 	state := atomic.LoadInt32(&client.State)
 
@@ -736,7 +745,10 @@ func (p *protocolV2) RDY(client *clientV2, params [][]byte) ([]byte, error) {
 
 	return nil, nil
 }
-
+//当消费者将channel发送的消息消费完毕后，会显式向nsq发送FIN命令（类似于ACK）。当服务端收到此命令后，就可将消息从消息队列中删除。
+// FIN方法首先调用client.Channel.FinishMessage方法将消息从channel的两个集合in-flight queue队列及inFlightMessages 字典中移除。
+// 然后调用client.FinishedMessage更新client的维护的消息消费的统计信息。
+// 消费者 client 收到消息后，会向 nsqd　响应　FIN+msgID　通知服务器成功投递消息，可以清空消息了
 func (p *protocolV2) FIN(client *clientV2, params [][]byte) ([]byte, error) {
 	state := atomic.LoadInt32(&client.State)
 	if state != stateSubscribed && state != stateClosing {
@@ -746,27 +758,26 @@ func (p *protocolV2) FIN(client *clientV2, params [][]byte) ([]byte, error) {
 	if len(params) < 2 {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "FIN insufficient number of params")
 	}
-
+	// 2. 获取 msgID
 	id, err := getMessageID(params[1])
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", err.Error())
 	}
-	//客户端发送FIN 某条消息来FinishMessage结束消息倒计时，成功投递
-	//结束消息倒计时，投递完成
-	//FinishMessage 函数就是删除设置的inflight倒计时队列
-	err = client.Channel.FinishMessage(client.ID, *id)
+	err = client.Channel.FinishMessage(client.ID, *id) //将消息从 channel 的 in-flight queue 及 inFlightMessages 字典中移除
 	if err != nil {
 		return nil, protocol.NewClientErr(err, "E_FIN_FAILED",
 			fmt.Sprintf("FIN %s failed %s", *id, err.Error()))
 	}
 
-	client.FinishedMessage()
+	client.FinishedMessage() // 4. 更新 client 维护的消息消费的统计信息
 
 	return nil, nil
 }
-
-func (p *protocolV2) REQ(client *clientV2, params [][]byte) ([]byte, error) {
-	state := atomic.LoadInt32(&client.State)
+//消费者可以通过向服务端发送REQ命令以将消息重新入队，即让服务端一定时间后（也可能是立刻）将消息重新发送给channel关联的客户端。
+// 此方法的核心是client.Channel.RequeueMessage，它会先将消息从in-flight queue优先级队列中移除，然后根据客户端是否需要延时timeout发送，
+// 分别将消息压入channel的消息队列(memoryMsgChan或backend)，或者构建一个延时消息，并将其压入到deferred queue。
+func (p *protocolV2) REQ(client *clientV2, params [][]byte) ([]byte, error) { //重新入队，并指定是否需要延时发送。
+	state := atomic.LoadInt32(&client.State)// 1. 先检验 client 的状态以及参数信息
 	if state != stateSubscribed && state != stateClosing {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot REQ in current state")
 	}
@@ -779,7 +790,7 @@ func (p *protocolV2) REQ(client *clientV2, params [][]byte) ([]byte, error) {
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", err.Error())
 	}
-
+	// 2. 从请求中取出重入队的消息被延迟的时间，并转化单位，同时限制其不能超过最大的延迟时间 maxReqTimeout
 	timeoutMs, err := protocol.ByteToBase10(params[2])
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_INVALID",
@@ -800,14 +811,16 @@ func (p *protocolV2) REQ(client *clientV2, params [][]byte) ([]byte, error) {
 			client, timeoutDuration, maxReqTimeout, clampedTimeout)
 		timeoutDuration = clampedTimeout
 	}
-
+	// 3. 调用 channel.RequeueMessage 将消息重新入队。首先会将其从 in-flight queue 中删除，
+	// 然后依据其 timeout 而定，若其为0,则直接将其添加到消息队列中，否则，若其 timeout 不为0,则构建一个 deferred message，
+	// 并设置好延迟时间为 timeout，并将其添加到 deferred queue中
 	err = client.Channel.RequeueMessage(client.ID, *id, timeoutDuration)
 	if err != nil {
 		return nil, protocol.NewClientErr(err, "E_REQ_FAILED",
 			fmt.Sprintf("REQ %s failed %s", *id, err.Error()))
 	}
 
-	client.RequeuedMessage()
+	client.RequeuedMessage() // 4. 更新 client 保存的关于消息的统计计数
 
 	return nil, nil
 }
@@ -834,13 +847,13 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "PUB insufficient number of parameters")
 	}
 
-	topicName := string(params[1])
+	topicName := string(params[1]) // 1. 读取 topic 名称
 	if !protocol.IsValidTopicName(topicName) {
 		return nil, protocol.NewFatalClientErr(nil, "E_BAD_TOPIC",
 			fmt.Sprintf("PUB topic name %q is not valid", topicName))
 	}
 
-	bodyLen, err := readLen(client.Reader, client.lenSlice) //消息体, 在client 请求的下一行开始, 头4个字节是消息体长度
+	bodyLen, err := readLen(client.Reader, client.lenSlice) // 2. 读取消息体长度 bodyLen，并在长度上进行校验, 在client 请求的下一行开始, 头4个字节是消息体长度
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body size")
 	}
@@ -856,7 +869,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 	}
 
 	messageBody := make([]byte, bodyLen) //建立缓冲区，并将此长度的消息读入
-	_, err = io.ReadFull(client.Reader, messageBody)
+	_, err = io.ReadFull(client.Reader, messageBody) // 3. 读取指定字节长度的消息内容到 messageBody
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body")
 	}
@@ -866,17 +879,18 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 	}
 	//get一下topic，如果没有会自动创建，并且开启topic的消息循环，开始从lookupd同步消息
 	topic := p.ctx.nsqd.GetTopic(topicName)
+	// 6. 构造一条 message，并将此 message 投递到此 topic 的消息队列中
 	msg := NewMessage(topic.GenerateID(), messageBody) //GenerateID产生一个消息的唯一标识符
 	err = topic.PutMessage(msg)                        //实际上就是topic.put,将消息放入t.memoryMsgChan或者磁盘后就返回了。客户端流程结束.
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_PUB_FAILED", "PUB failed "+err.Error())
 	}
 
-	client.PublishedMessage(topicName, 1)
+	client.PublishedMessage(topicName, 1) // 7. 开始发布此消息，即将对应的 client 修改为此 topic 保存的消息的计数。
 
-	return okBytes, nil
+	return okBytes, nil // 回复 Ok
 }
-
+//MPUB一次性发布多条消息，DPUB用于发布延时投递的消息等等
 func (p *protocolV2) MPUB(client *clientV2, params [][]byte) ([]byte, error) {
 	var err error
 
@@ -993,7 +1007,7 @@ func (p *protocolV2) DPUB(client *clientV2, params [][]byte) ([]byte, error) {
 
 	return okBytes, nil
 }
-
+//TOUCH命令请求，即重置消息的超时时间
 func (p *protocolV2) TOUCH(client *clientV2, params [][]byte) ([]byte, error) {
 	state := atomic.LoadInt32(&client.State)
 	if state != stateSubscribed && state != stateClosing {

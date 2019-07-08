@@ -397,15 +397,18 @@ func (c *Channel) FinishMessage(clientID int64, id MessageID) error {
 // `timeoutMs`  > 0 - asynchronously wait for the specified timeout
 //     and requeue a message (aka "deferred requeue")
 //
+// 将消息重新入队。这与 timeout 参数密切相关。
+// 当 timeout == 0 时，直接将此消息重入队。
+// 否则，异步等待此消息超时，然后 再将此消息重入队，即是相当于消息被延迟了
 func (c *Channel) RequeueMessage(clientID int64, id MessageID, timeout time.Duration) error {
 	// remove from inflight first
-	msg, err := c.popInFlightMessage(clientID, id)
+	msg, err := c.popInFlightMessage(clientID, id) // 1. 先将消息从 inFlightMessages 移除
 	if err != nil {
 		return err
 	}
-	c.removeFromInFlightPQ(msg)
+	c.removeFromInFlightPQ(msg) // 2. 同时将消息从 in-flight queue 中移除，并更新 chanel 维护的消息重入队数量 requeueCount
 	atomic.AddUint64(&c.requeueCount, 1)
-
+	// 3. 若 timeout 为0,则将消息重新入队。即调用 channel.put 方法，将消息添加到 memoryMsgChan 或 backend
 	if timeout == 0 {
 		c.exitMutex.RLock()
 		if c.Exiting() {
@@ -418,7 +421,7 @@ func (c *Channel) RequeueMessage(clientID int64, id MessageID, timeout time.Dura
 	}
 
 	// deferred requeue
-	return c.StartDeferredTimeout(msg, timeout)
+	return c.StartDeferredTimeout(msg, timeout) // 否则，创建一个延迟消息，并设置延迟时间
 }
 
 // AddClient adds a client to the Channel's client list

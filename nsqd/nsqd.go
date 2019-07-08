@@ -86,7 +86,7 @@ func New(opts *Options) (*NSQD, error) {
 		dataPath = cwd
 	}
 	if opts.Logger == nil {
-		//日志输出大多都是stderr标准错误输出, 无缓冲实时性强,stderr本来就是为了输出日志、错误信息之类的运行数据而存在的
+		//日志输出大多都是stderr标准错误输出, stderr无缓冲实时性强,stderr本来就是为了输出日志、错误信息之类的运行数据而存在的
 		//LstdFlags= Ldate | Ltime,Lmicroseconds表示把时间的毫秒部分也输出出来
 		opts.Logger = log.New(os.Stderr, opts.LogPrefix, log.Ldate|log.Ltime|log.Lmicroseconds) //opts.Logger在n.logf中被用到
 	}
@@ -94,7 +94,7 @@ func New(opts *Options) (*NSQD, error) {
 	n := &NSQD{
 		startTime:            time.Now(),
 		topicMap:             make(map[string]*Topic), //make和new的功能相似都是分配空间，但是make只能用在slice/map/chan上，因为这3中类型在使用前必须进行初始化,结构体中只是类型声明，此处进行了初始化，相当于topicMap：=map[string]*Topic{}
-		clients:              make(map[int64]Client),
+		clients:              make(map[int64]Client), //标识符id对应的client，来一个client就存储一下。存的是订阅了此nsqd所维护的topic的客户端实体
 		exitChan:             make(chan int),
 		notifyChan:           make(chan interface{}),
 		optsNotificationChan: make(chan struct{}, 1),
@@ -157,7 +157,7 @@ func New(opts *Options) (*NSQD, error) {
 
 	n.logf(LOG_INFO, version.String("nsqd")) //由opt中的Logger规定打印到何出。
 	n.logf(LOG_INFO, "ID: %d", opts.ID)
-
+	//listen只是注册，accpet对应的才是客户端的Dial，建立连接后开始read和write
 	n.tcpListener, err = net.Listen("tcp", opts.TCPAddress) //创建n.tcpListener，后续在这个listener上accept,accept的时候就是等待客户端连接（可阻塞或非阻塞）。
 	if err != nil {
 		return nil, fmt.Errorf("listen (%s) failed - %s", opts.TCPAddress, err)
@@ -328,17 +328,16 @@ func writeSyncFile(fn string, data []byte) error {
 // 如果不一样就报错。 随后json.Unmarshal(data, &m) 格式化json文件内容，循环Topics然后递归扫描其Channels列表。
 //在扫描topic和channel的时候，分别会调用 GetTopic， GetChannel， 其实这两个函数如果在判断topic不存在的时候，会创建他，并且跟lookupd进行联系.
 func (n *NSQD) LoadMetadata() error {
-	//标识元数据已加载
-	atomic.StoreInt32(&n.isLoading, 1) //通过原子操作的方式把1写入n.isLoading
+	atomic.StoreInt32(&n.isLoading, 1) //通过原子操作的方式把1写入n.isLoading，标识元数据正在加载，加载完毕后会把他置为0。
 	defer atomic.StoreInt32(&n.isLoading, 0)
 	// 1. 构建 metadata 文件全路径， nsqd.dat，并读取文件内容
 	fn := newMetadataFile(n.getOpts())
 
 	data, err := readOrEmpty(fn) //读取元数据文件
-	if err != nil { //如果文件内容为空，则表明是首次启动，直接返回
+	if err != nil {
 		return err
 	}
-	if data == nil {
+	if data == nil { //如果文件内容为空，则表明是首次启动，直接返回
 		return nil // fresh start
 	}
 
@@ -483,8 +482,8 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 		n.Unlock()
 		return t
 	}
-	// 3. 创建删除指定 topic 的回调函数，即在删除指定的 topic 之前，需要做的一些清理工作，
-	// 比如关闭 与此 topic 所关联的channel，同时判断删除此 topic 所包含的所有 channel
+	//下面就开始处理这个topic不存在的情况。
+	// 3. 创建删除指定 topic 的回调函数，即在删除指定的 topic 之前，需要做的一些清理工作，比如关闭与此topic所关联的channel，同时判断删除此topic所包含的所有channel
 	deleteCallback := func(t *Topic) { //topic实例的删除回调函数
 		n.DeleteExistingTopic(t.name)
 	}
@@ -501,7 +500,7 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 	// if loading metadata at startup, no lookupd connections yet, topic started after load
 	//“原子的”这个形容词就意味着，在这里读取value的值的同时，当前计算机中的任何CPU都不会进行其它的针对此值的读或写操作。这样的约束是受到底层硬件的支持的。
 	if atomic.LoadInt32(&n.isLoading) == 1 { //若正处在启动过程，刚启动的时候LoadMetadata函数会
-		return t //当正在加载元数据的时候，还没有lookupd连接，topic必须在元数据加载完后才行
+		return t //当正在加载元数据的时候，还没有lookupd连接，所以没法通知lookupd，topic必须在元数据加载完后才行
 	}
 
 	// if using lookupd, make a blocking call to get the topics, and immediately create them.
@@ -521,7 +520,7 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 			}
 			// 5.3 根据 channel name获取 channel实例，且有可能是新建.
 			// 若是新建了一个 channel，则通知 topic的后台消息协程去处理channel的更新事件
-			// 之所以在查询到指定 channel 的情况下，新建 channel，是为了保证消息尽可能不被丢失，
+			// 之所以在查询到指定channel的情况下，新建channel是为了保证消息尽可能不被丢失，
 			// 比如在 nsq 重启时，需要在重启的时刻创建那些 channel，避免生产者生产的消息
 			// 不能被放到 channel 中，因为在这种情况下，只能等待消费者来指定的 channel 中获取消息才会创建。
 			t.GetChannel(channelName)
@@ -578,7 +577,7 @@ func (n *NSQD) Notify(v interface{}) {
 	// since the in-memory metadata is incomplete,
 	// should not persist metadata while loading it.
 	// nsqd will call `PersistMetadata` it after loading
-	persist := atomic.LoadInt32(&n.isLoading) == 0
+	persist := atomic.LoadInt32(&n.isLoading) == 0 //决定要不要持久化，若已经在加载状态，说明已经是存在的，不需要做持久化。
 	n.waitGroup.Wrap(func() {
 		// by selecting on exitChan we guarantee that
 		// we do not block exit, see issue #123

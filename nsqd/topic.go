@@ -44,7 +44,8 @@ type Topic struct {
 	ctx *context
 }
 
-//程序中存在以下几条链来调用NewTopic创建NewTopic：其一，nsqd.Start->nsqd.PersistMetadata->nsqd.GetTopic->NewTopic；
+//程序中存在以下几条链来调用NewTopic创建Topic：
+// 其一，nsqd.Start->nsqd.LoadMetadata->nsqd.GetTopic->NewTopic；
 // 其二，httpServer.getTopicFromQuery->nsqd.GetTopic->NewTopic；
 // 其三，protocolV2.PUB/SUB->nsqd.GetTopic这三条调用路径。
 func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topic {
@@ -75,7 +76,7 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		//下面初始化一下持久化的diskqueue数据结构, 传入路径和文件大小相关的参数，以及sync刷磁盘的配置
 		//diskqueue这个包主要功能是消息持久化存储组件。
 		//diskQueue是从nsq项目中抽取而来，将它单独作为一个项目go-diskqueue。它本身比较简单，只有一个源文件diskqueue.go。
-		t.backend = diskqueue.New( //注意这个diskQueue是一个私有的，必须通过其自带方法才能访问。小写都是针对包而言的，所有的小写都不能被其他包访问，但是能被本包访问。这里的New是大写，也就是说通过暴露出来的方法来操作包的私有比变量。
+		t.backend = diskqueue.New( //注意这个diskQueue是一个私有的，必须通过其自带方法才能访问。小写都是针对包而言的，所有的小写都不能被其他包访问，但是能被本包访问。这里的New是大写，也就是说通过暴露出来的方法来操作包的私有化变量。
 			topicName,
 			ctx.nsqd.getOpts().DataPath, // 数据存储路径，当前目录或指定的目录
 			ctx.nsqd.getOpts().MaxBytesPerFile, // 存储文件的最大字节数

@@ -40,8 +40,8 @@ func (p *program) Init(env svc.Environment) error {
 //start返回后会进入到svc的代码里面进行等待监听信号量，如果用户杀进程，就调用下面的stop
 func (p *program) Start() error {
 	opts := nsqd.NewOptions() // 1. 通过程序默认的参数构建 options 实例
-	// 2. 将 opts 结合命令行参数集进行进一步初始化
-	flagSet := nsqdFlagSet(opts)
+
+	flagSet := nsqdFlagSet(opts)// 2. 将 opts 结合命令行参数集进行进一步初始化
 	flagSet.Parse(os.Args[1:]) //因为用到了NewFlagSet,所以此处就需要指定Parse的参数，如果用的是默认Flag,则其参数无需指定
 
 	rand.Seed(time.Now().UTC().UnixNano()) //设置随机数种子，后面所有的随机数的操作都是根据这个种子来的。
@@ -69,9 +69,8 @@ func (p *program) Start() error {
 		logFatal("failed to instantiate nsqd - %s", err)
 	}
 	p.nsqd = nsqd
-	// 6. 加载 metadata文件，
-	// 若文件存在，则恢复 topic和channel的信息（如pause状态），并调用 topic.Start方法
-	err = p.nsqd.LoadMetadata()//加载磁盘文件nsqd.data时，会先创建所有之前的topic,初始化n.topics结构
+	// 6. 加载 metadata文件(磁盘文件nsqd.data)，若文件存在，则恢复 topic和channel的信息（如pause状态），并调用 topic.Start方法
+	err = p.nsqd.LoadMetadata()
 	if err != nil {
 		logFatal("failed to load metadata - %s", err)
 	}

@@ -191,6 +191,9 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 	case bytes.Equal(params[0], []byte("REQ")):
 		return p.REQ(client, params)
 	case bytes.Equal(params[0], []byte("PUB")):
+		//客户端发送消息的形式：
+		//PUB <topic_name>\n
+		//[ 4-byte size in bytes ][ N-byte binary data ]
 		return p.PUB(client, params)
 	case bytes.Equal(params[0], []byte("MPUB")):
 		return p.MPUB(client, params)
@@ -852,8 +855,8 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, protocol.NewFatalClientErr(nil, "E_BAD_TOPIC",
 			fmt.Sprintf("PUB topic name %q is not valid", topicName))
 	}
-
-	bodyLen, err := readLen(client.Reader, client.lenSlice) // 2. 读取消息体长度 bodyLen，并在长度上进行校验, 在client 请求的下一行开始, 头4个字节是消息体长度
+	//前面被读走了命令的第一行，下面开始第二行
+	bodyLen, err := readLen(client.Reader, client.lenSlice) // 2. 先读取消息体长度bodyLen，并在长度上进行校验, 在client 请求的下一行开始, 头4个字节是消息体长度
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body size")
 	}
@@ -873,7 +876,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body")
 	}
-	//client 是否有权限对这个 topic 做 PUB 操作
+	//client 是否有权限对这个 topic做PUB 操作
 	if err := p.CheckAuth(client, "PUB", topicName, ""); err != nil {
 		return nil, err
 	}
@@ -886,7 +889,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, protocol.NewFatalClientErr(err, "E_PUB_FAILED", "PUB failed "+err.Error())
 	}
 
-	client.PublishedMessage(topicName, 1) // 7. 开始发布此消息，即将对应的 client 修改为此 topic 保存的消息的计数。
+	client.PublishedMessage(topicName, 1) // 7. 修改此client发送消息的计数。
 
 	return okBytes, nil // 回复 Ok
 }

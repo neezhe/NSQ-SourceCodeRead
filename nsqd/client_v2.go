@@ -56,7 +56,7 @@ type clientV2 struct {
 	FinishCount   uint64
 	RequeueCount  uint64
 
-	pubCounts map[string]uint64
+	pubCounts map[string]uint64 //key是topic的name,值是这个client发布消息的count数。
 
 	writeLock sync.RWMutex
 	metaLock  sync.RWMutex

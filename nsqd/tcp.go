@@ -10,7 +10,7 @@ import (
 type tcpServer struct {
 	ctx *context
 }
-
+//由此可见p.ctx.nsqd是一个全局的结构体，运行的所有的服务（topic/channel的一切行为）都是在p.ctx.nsqd创建之后，所以他能被所有服务使用。
 func (p *tcpServer) Handle(clientConn net.Conn) {
 	p.ctx.nsqd.logf(LOG_INFO, "TCP: new client(%s)", clientConn.RemoteAddr())
 

@@ -332,7 +332,7 @@ func (c *Channel) PutMessage(m *Message) error {
 
 func (c *Channel) put(m *Message) error {
 	select {
-	case c.memoryMsgChan <- m:
+	case c.memoryMsgChan <- m: //此memoryMsgChan中的消息只有flush函数才能拿去。
 	default:
 		b := bufferPoolGet()
 		err := writeMessageToBackend(b, m, c.backend)

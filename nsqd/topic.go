@@ -120,7 +120,7 @@ func (t *Topic) GetChannel(channelName string) *Channel {
 		select {
 		// 若此 channel为新创建的，则 push 消息到 channelUpdateChan中，
 		// 使(t *Topic) messagePump中的memoryMsgChan 及 backend 刷新状态
-		case t.channelUpdateChan <- 1: //另一端是(t *Topic) messagePump
+		case t.channelUpdateChan <- 1: //如果时新创建的channel，另一端是(t *Topic) messagePump
 		case <-t.exitChan:
 		}
 	}
@@ -242,7 +242,7 @@ func (t *Topic) put(m *Message) error {
 	// 先写入memoryMsgChan这个队列,假如 memoryMsgChan已满, 不可写入
 	// golang 就会执行 default 语句,
 	select {
-	case t.memoryMsgChan <- m: //将这条消息直接塞入内存管道
+	case t.memoryMsgChan <- m: //将这条消息直接塞入内存管道，mesasgePump开始处理。
 	default: //如果内存消息管道满了(memoryMsgChan的容量由 getOpts().MemQueueSize设置)，那么就放入到后面的持久化存储里面
 		b := bufferPoolGet() //从缓冲池中获取缓冲，可复用buffer，减少对象生成，阅读一下sync.Pool包
 		err := writeMessageToBackend(b, m, t.backend) //将消息写入持久化消息队列，backend是创建topic的时候建立的diskqueue
@@ -264,8 +264,11 @@ func (t *Topic) Depth() int64 {
 
 // messagePump selects over the in-memory and backend queue and
 // writes messages to every channel for this topic
-//监听 message 的更新的一些状态，以及时将消息持久化，同时写入到此 topic 对应的channel
-func (t *Topic) messagePump() {
+//当通过http或TCP来PUB消息的时候，会把消息写到topic的memoryMsgChan或Backend，然后通知Topic的messagePump来处理。而Topic的messagePump只在NewTopic的时候会被调用，而调用NewTopic有3条路。
+//其一，nsqd.Start->nsqd.LoadMetadata->nsqd.GetTopic->NewTopic；//在程序刚上电时，所有的Topic都必须new出来。
+//其二，httpServer.getTopicFromQuery->nsqd.GetTopic->NewTopic；
+//其三，protocolV2.PUB/SUB->nsqd.GetTopic这三条调用路径。//当向一个topic上发布或者订阅的时候，会检查这个topic是否存在，不存在就创建。
+func (t *Topic) messagePump() { //此函数只在NewTopic的时候被调用。
 	var msg *Message
 	var buf []byte
 	var err error
@@ -275,28 +278,30 @@ func (t *Topic) messagePump() {
 
 	// do not pass messages before Start(), but avoid blocking Pause() or GetChannel()
 	// 1. 等待开启 topic 消息处理循环，即等待调用 topic.Start，
-	// 在 nsqd.GetTopic 和 nsqd.LoadMetadata 方法中调用
 	for {
-		select {
-		case <-t.channelUpdateChan:
+		select { //没有default语句，select语句将被阻塞,
+		case <-t.channelUpdateChan: //当拿到“被新建的”channel的时候，通知此处，但此处continue不做任何操作。
 			continue
-		case <-t.pauseChan:
+		case <-t.pauseChan: //
 			continue
 		case <-t.exitChan:
 			goto exit
-		case <-t.startChan: //当pub一个消息后（比如curl -d 'hello world 1' 'http://127.0.0.1:4151/pub?topic=test'），在gettopic中初始化完topic后，会通知此处的startChan
+		//上面的几个chan无法进入下面的数据处理，发现只有这个chan中有数据的话才能跳出此循环，也就是只有当调用了GetTopic中最后的Start函数才行。
+		// 但是这个Topic的messagePump函数也是只能由GetTopic的中间创建，也就是说此messagePump先被创建然后阻塞在此处，等GetTopic结束时跳出此for循环。
+		//但注意此GetTopic有3条路经会被调用。
+		case <-t.startChan: //比如当pub一个消息后（比如curl -d 'hello world 1' 'http://127.0.0.1:4151/pub?topic=test'），在gettopic中初始化完topic后，会通知此处的startChan
 			//下面就开始从Memory chan或者disk读取消息
 		}
 		break
 	}
 	t.RLock()//避免锁竞争, 所以缓存已存在的 channel
-	for _, c := range t.channelMap {  //拿到这个topic的所有channel,多线程中遍历类中一个成员变量的操作, 需要给 类加锁
+	for _, c := range t.channelMap {  //拿到这个topic的所有channel,多线程中遍历类中一个成员变量的操作, 需要给类加锁
 		chans = append(chans, c)
 	}
 	t.RUnlock()
 	//若topic.channelMap 存在 channel，且 topic 未被 paused，则初始化两个通道 memoryMsgChan，backendChan
 	if len(chans) > 0 && !t.IsPaused() {
-		memoryMsgChan = t.memoryMsgChan //是topic.PutMessage在源源不断的向memoryMsgChan中写数据，memoryMsgChan是在NewTopic的时候设置的大小
+		memoryMsgChan = t.memoryMsgChan //用户pub消息后，是topic.PutMessage在源源不断的向memoryMsgChan中写数据，memoryMsgChan是在NewTopic的时候设置的大小
 		backendChan = t.backend.ReadChan() //下面要从DiskQueue.ReadChan中取消息，在new一个diskqueue的时候会把从文件中读取信息到readChan
 	}
 
@@ -304,7 +309,7 @@ func (t *Topic) messagePump() {
 	// 开始从Memory chan或者disk读取消息
 	// 如果topic对应的channel发生了变化，则更新channel信息
 	for {
-		select {
+		select { //阻塞在这5个chan
 		case msg = <-memoryMsgChan: //内存队列,注意每个case互不干扰，msg的值不会进入到下面backendChan的case中
 		case buf = <-backendChan: //磁盘队列（文件里）
 			msg, err = decodeMessage(buf) //磁盘读出的消息要转换成和内存中一致的消息格式，即message的结构体形式。
@@ -342,16 +347,12 @@ func (t *Topic) messagePump() {
 		case <-t.exitChan: // 3.4 当调用 topic.exit 时会收到信号，以终止 topic 的消息处理循环
 			goto exit
 		}
-		// 3. 往该tpoic对应的每个channel写入message，因为每个 channel 需要一个独立 msg，因此需要在拷贝时需要创建 msg 的副本，，针对 msg 是否需要被延时投递来放到不同的队列(如果是deffermessage
+		// 3. 往该tpoic对应的每个channel写入message，因为每个 channel 需要一个独立 msg，因此需要在拷贝时需要创建 msg 的副本，针对 msg 是否需要被延时投递来放到不同的队列(如果是deffermessage
 		// 的话放到对应的deffer queue中，否则放到该channel对应的memoryMsgChan中)。
 		for i, channel := range chans { //遍历每个channel,然后将消息一个个发送到channel的流程里面.看到没，此处就是将一条topic的消息多播到多有的channel,然后消费者通过订阅的channel读取，如果一个channel上面有多个consumer，则随机。
 			//到这里只有一种可能，有新消息来了, 那么遍历channel，调用PutMessage发送消息
-			chanMsg := msg //为啥要拷贝？
-			// copy the message because each channel
-			// needs a unique instance but...
-			// fastpath to avoid copy if its the first channel
-			// (the topic already created the first copy)
-			if i > 0 {// 若此 topic 只有一个 channel，则不需要显式地拷贝了，下面就是在拷贝。
+			chanMsg := msg //为啥要拷贝？因为每个channel需要一个独立的消息实例
+			if i > 0 {// 若此 topic 只有一个 channel，则不需要显式地拷贝了，下面就是在显式拷贝。
 				chanMsg = NewMessage(msg.ID, msg.Body)
 				chanMsg.Timestamp = msg.Timestamp
 				chanMsg.deferred = msg.deferred

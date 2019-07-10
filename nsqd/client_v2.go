@@ -85,7 +85,7 @@ type clientV2 struct {
 
 	State          int32
 	ConnectTime    time.Time
-	Channel        *Channel
+	Channel        *Channel //一个客户端只有一个channel
 	ReadyStateChan chan int
 	ExitChan       chan int
 

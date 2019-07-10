@@ -48,7 +48,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 	go p.messagePump(client, messagePumpStartedChan) //从该client订阅的channel中读取消息并发送给consumer（通过SendMessage），这个操作的上游就是tpoic的messagePump把消息放入channel
 	// 1. 同步 messagePump 的启动过程，因为 messagePump会从client获取的一些属性
 	// 而避免与执行 IDENTIFY 命令的 client 产生数据竞争，即当前client在后面可能修改相关的数据
-	<-messagePumpStartedChan //阻塞在此处等上句messagePump先执行。原因在于，需要确保messagePump里面的初始化完成，当前客户端在后面的操作可能修改相关的数据。消息的订阅发布工作在辅助的messagePump协程处理。
+	<-messagePumpStartedChan //阻塞在此处等上句messagePump先关闭messagePumpStartedChan。原因在于，需要确保messagePump里面的初始化完成，当前客户端在后面的操作可能修改相关的数据。消息的订阅发布工作在辅助的messagePump协程处理。
 
 	//下面开始处理client请求，开始循环读取客户端请求然后解析参数，进行处理, 这个工作在客户端的主协程处理
 	for {
@@ -245,7 +245,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 	var flusherChan <-chan time.Time //表示需要进行显式地刷新（是一个ticker），用于有多个客户端的低容量topic中的channel上的不可控的消息延时。
 	var sampleRate int32
 	// 1. 获取客户端的属性
-	subEventChan := client.SubEventChan //subEventChan是客户端有订阅行为的通知channel，订阅一次后会重置为null。这个地方直接这样赋值，后面从subEventChan拿值也会清空client.SubEventChan
+	subEventChan := client.SubEventChan //subEventChan是客户端有订阅行为的通知channel，订阅一次后会重置为null。
 	identifyEventChan := client.IdentifyEventChan
 	outputBufferTicker := time.NewTicker(client.OutputBufferTimeout)
 	heartbeatTicker := time.NewTicker(client.HeartbeatInterval) //设置和客户端的心跳定时器
@@ -263,7 +263,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 
 	// signal to the goroutine that started the messagePump
 	// that we've started up
-	close(startedChan)
+	close(startedChan) //这一句就是用来解除阻塞的，被关闭的channel不能被写但能被读，被读到的是默认值，当然同一个channel也不能被关闭多次。
 
 	for {
 		//subChannel == nil即此客户端未订阅任何channel或者客户端还未准备好接收消息
@@ -359,7 +359,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			// 若其大于 客户端发送过来的数字 sampleRate，则 client 虽然订阅了此 channel，且此 channel中也有消息了，但是不会发送给此 client。
 			// 这里就体现了 官方文档 中所说的，当一个 channel 被 client 订阅时，它会将收到的消息随机发送给这一组 client 中的一个。
 			// 而且，就算只有一个 client，从程序中来看，也不一定能够获取到此消息，具体情况也与 client 编写的程序规则相关
-		if sampleRate > 0 && rand.Int31n(100) > sampleRate { //通过生成一个0到100范围内的随机数，若此随机数小于SampleRate则此消息会发送给此客户端
+			if sampleRate > 0 && rand.Int31n(100) > sampleRate { //通过生成一个0到100范围内的随机数，若此随机数小于SampleRate则此消息会发送给此客户端
 				continue
 			}
 
@@ -373,8 +373,8 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			//inflight功能用来保证消息的一次到达，所有发送给客户端，但是没收到FIN确认的消息都放到这里面。
 			//然后，调用channel实例的StartInFlightTimeout将消息压入到in-flight queue中（代表正在发送的消息队列），等待被queueScanWorker处理。
 			subChannel.StartInFlightTimeout(msg, client.ID, msgTimeout) //监听这个channel的请求，如果有消息到来，被触发后发送给客户端
-			client.SendingMessage()// 更新client 的关于正在发送消息的属性
-			err = p.SendMessage(client, msg) //正式发送消息到指定的 client，这个很简单，go语言对于网络请求包装的非常像同步读写，比C简单太多了，不需要处理任何内存结构，buffer组织等，方便到不行：
+			client.SendingMessage()                                     // 更新client 的关于正在发送消息的属性
+			err = p.SendMessage(client, msg)                            //正式发送消息到指定的 client，这个很简单，go语言对于网络请求包装的非常像同步读写，比C简单太多了，不需要处理任何内存结构，buffer组织等，方便到不行：
 			if err != nil {
 				goto exit
 			}
@@ -640,12 +640,13 @@ func (p *protocolV2) CheckAuth(client *clientV2, cmd, topicName, channelName str
 	}
 	return nil
 }
+
 //客户端在指定的 topic 上订阅消息
 //消费者使用TCP协议，发送SUB topic channel命令订阅某个channel，NSQD会获取需要订阅的topic和channel，然后将client添加到相应的channel中，通知c.SubEventChan
 func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	// 1.做一些校验工作，只有当 client 处于 stateInit 状态才能订阅某个 topic 的 channel，
 	// 换言之，当一个client订阅了某个channel之后，它的状态会被更新为stateSubscribed，因此不能再订阅 channel 了。
-	// 总而言之，一个 client 只能订阅一个 channel
+	// 总而言之，一个 client 只能订阅一个 channel，但一个channel可以有多个client
 	if atomic.LoadInt32(&client.State) != stateInit {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot SUB in current state")
 	}
@@ -683,7 +684,7 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 		//获取topic和channel实例
 		topic := p.ctx.nsqd.GetTopic(topicName)
 		channel = topic.GetChannel(channelName)
-		// 5. 调用 channel的 AddClient 方法添加指定客户端
+		// 5. 调用 channel的 AddClient 方法添加指定客户端，NSQD结构体中存储的是发布者的client,在channel中存的client是消费者的。
 		if err := channel.AddClient(client.ID, client); err != nil { //将client加入到相应的channel中
 			return nil, protocol.NewFatalClientErr(nil, "E_TOO_MANY_CHANNEL_CONSUMERS",
 				fmt.Sprintf("channel consumers for %s:%s exceeds limit of %d",
@@ -697,17 +698,17 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 		}
 		break
 	}
-	atomic.StoreInt32(&client.State, stateSubscribed)// 6. 修改客户端的状态为 stateSubscribed
+	atomic.StoreInt32(&client.State, stateSubscribed) // 6. 修改客户端的状态为 stateSubscribed
 	//下面这行很重要，设置本client所订阅的channel，这样接下来的SubEventChan就会由当前clienid开启的后台协程来订阅这个channel的消息。
-	// 7. 这一步比较关键，将订阅的 channel实例传递给了client，同时将channel发送到了client.SubEventChan 通道中。
-	// 后面的 SubEventChan 就会使得当前的 client在一个 goroutine中订阅这个 channel 的消息
+	// 7.这一步比较关键，将订阅的 channel实例传递给了client，同时将channel发送到了client.SubEventChan 通道中。
+	// 后面的SubEventChan就会使得当前的 client在一个 goroutine中订阅这个channel的消息
 	client.Channel = channel //在client中也记录下这个channel
 	// update message pump
-	//通知后台订阅协程来订阅消息,包括内存管道和磁盘
-	client.SubEventChan <- channel
+	client.SubEventChan <- channel //通知client的messagePump开始工作了
 
 	return okBytes, nil // 9. 返回 ok
 }
+
 //在消费者未发送RDY命令给服务端之前，服务端不会推送消息给客户端，因为此时服务端认为消费者还未准备好接收消息（由方法client.IsReadyForMessages实现）。
 //另外，此RDY命令的含义，简而言之，当RDY 100即表示客户端具备一次性接收并处理100个消息的能力，因此服务端此时更可推送100条消息给消费者（如果有的话），
 //每推送一条消息，就要修改client.ReadyCount的值。
@@ -748,6 +749,7 @@ func (p *protocolV2) RDY(client *clientV2, params [][]byte) ([]byte, error) {
 
 	return nil, nil
 }
+
 //当消费者将channel发送的消息消费完毕后，会显式向nsq发送FIN命令（类似于ACK）。当服务端收到此命令后，就可将消息从消息队列中删除。
 // FIN方法首先调用client.Channel.FinishMessage方法将消息从channel的两个集合in-flight queue队列及inFlightMessages 字典中移除。
 // 然后调用client.FinishedMessage更新client的维护的消息消费的统计信息。
@@ -776,11 +778,12 @@ func (p *protocolV2) FIN(client *clientV2, params [][]byte) ([]byte, error) {
 
 	return nil, nil
 }
+
 //消费者可以通过向服务端发送REQ命令以将消息重新入队，即让服务端一定时间后（也可能是立刻）将消息重新发送给channel关联的客户端。
 // 此方法的核心是client.Channel.RequeueMessage，它会先将消息从in-flight queue优先级队列中移除，然后根据客户端是否需要延时timeout发送，
 // 分别将消息压入channel的消息队列(memoryMsgChan或backend)，或者构建一个延时消息，并将其压入到deferred queue。
 func (p *protocolV2) REQ(client *clientV2, params [][]byte) ([]byte, error) { //重新入队，并指定是否需要延时发送。
-	state := atomic.LoadInt32(&client.State)// 1. 先检验 client 的状态以及参数信息
+	state := atomic.LoadInt32(&client.State) // 1. 先检验 client 的状态以及参数信息
 	if state != stateSubscribed && state != stateClosing {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot REQ in current state")
 	}
@@ -855,7 +858,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, protocol.NewFatalClientErr(nil, "E_BAD_TOPIC",
 			fmt.Sprintf("PUB topic name %q is not valid", topicName))
 	}
-	//前面被读走了命令的第一行，下面开始第二行
+	//前面被读走了命令的第一行，下面开始读命令的第二行:数据长度 具体数据
 	bodyLen, err := readLen(client.Reader, client.lenSlice) // 2. 先读取消息体长度bodyLen，并在长度上进行校验, 在client 请求的下一行开始, 头4个字节是消息体长度
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body size")
@@ -871,7 +874,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 			fmt.Sprintf("PUB message too big %d > %d", bodyLen, p.ctx.nsqd.getOpts().MaxMsgSize))
 	}
 
-	messageBody := make([]byte, bodyLen) //建立缓冲区，并将此长度的消息读入
+	messageBody := make([]byte, bodyLen)             //建立缓冲区，并将此长度的消息读入
 	_, err = io.ReadFull(client.Reader, messageBody) // 3. 读取指定字节长度的消息内容到 messageBody
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body")
@@ -893,6 +896,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 
 	return okBytes, nil // 回复 Ok
 }
+
 //MPUB一次性发布多条消息，DPUB用于发布延时投递的消息等等
 func (p *protocolV2) MPUB(client *clientV2, params [][]byte) ([]byte, error) {
 	var err error
@@ -1010,6 +1014,7 @@ func (p *protocolV2) DPUB(client *clientV2, params [][]byte) ([]byte, error) {
 
 	return okBytes, nil
 }
+
 //TOUCH命令请求，即重置消息的超时时间
 func (p *protocolV2) TOUCH(client *clientV2, params [][]byte) ([]byte, error) {
 	state := atomic.LoadInt32(&client.State)

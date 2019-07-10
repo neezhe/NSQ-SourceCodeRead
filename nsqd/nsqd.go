@@ -751,7 +751,7 @@ func (n *NSQD) queueScanLoop() {
 		for _, i := range util.UniqRands(num, len(channels)) { // 随机取出num个channel, 派发给 worker 进行 扫描
 			workCh <- channels[i]
 		}
-		// 接收 扫描结果, 统一 有多少 channel 是 "脏" 的
+		// 接收 扫描结果, 统计有多少channel是"脏"的
 		// 3.5 统计 dirty 的 channel 的数量， responseCh管道在上面的 nsqd.resizePool方法中
 		// 传递给了 len(channels) * 0.25 个 queueScanWorker。
 		// 它们会在循环中反复查看两个消息优先级队列中是否有消息等待被处理：

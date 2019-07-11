@@ -44,18 +44,18 @@ func (p *program) Start() error {
 	flagSet := nsqdFlagSet(opts)// 2. 将 opts 结合命令行参数集进行进一步初始化
 	flagSet.Parse(os.Args[1:]) //因为用到了NewFlagSet,所以此处就需要指定Parse的参数，如果用的是默认Flag,则其参数无需指定
 
-	rand.Seed(time.Now().UTC().UnixNano()) //设置随机数种子，后面所有的随机数的操作都是根据这个种子来的。
+	rand.Seed(time.Now().UTC().UnixNano()) //设置随机数种子，后面所有的随机数的操作都是根据这个种子来的，能确保是随机的。
 	// 3. 若 version 参数存在，则打印版本号，然后退出
-	if flagSet.Lookup("version").Value.(flag.Getter).Get().(bool) {//flag.Getter无法理解
+	if flagSet.Lookup("version").Value.(flag.Getter).Get().(bool) {//对于非string类型的flag取值才会用到flag.Getter，这玩在flag包里实现了除string类型外的Get方法，当然绑定自定义变量的时候也需要自己实现了String/Set/Get方法。
 		fmt.Println(version.String("nsqd"))
 		os.Exit(0)
 	}
 	// 4. 若用户指定了自定义配置文件，则加载配置文件，读取配置文件，校验配置文件合法性
 	// 读取解析配置文件采用的是第三方库 https://github.com/BurntSushi/toml
 	var cfg config
-	configFile := flagSet.Lookup("config").Value.String()
+	configFile := flagSet.Lookup("config").Value.String() //因为config是字符串类型的，所以此处就不会用到Getter
 	if configFile != "" {
-		_, err := toml.DecodeFile(configFile, &cfg)//
+		_, err := toml.DecodeFile(configFile, &cfg) //toml文件格式
 		if err != nil {
 			logFatal("failed to load config file %s - %s", configFile, err)
 		}

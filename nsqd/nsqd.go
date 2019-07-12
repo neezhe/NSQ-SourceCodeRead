@@ -88,6 +88,8 @@ func New(opts *Options) (*NSQD, error) {
 	if opts.Logger == nil {
 		//日志输出大多都是stderr标准错误输出, stderr无缓冲实时性强,stderr本来就是为了输出日志、错误信息之类的运行数据而存在的
 		//LstdFlags= Ldate | Ltime,Lmicroseconds表示把时间的毫秒部分也输出出来
+		//注意此处，无论谁实现了接口中的方法都可以赋值给这个接口类型，由于是指针实现了opts.Logger的output函数，所以就不能将*log.New赋值给右边，只能将log.New赋值给右边。
+		//log.New返回的是标准库的logger
 		opts.Logger = log.New(os.Stderr, opts.LogPrefix, log.Ldate|log.Ltime|log.Lmicroseconds) //opts.Logger在n.logf中被用到
 	}
 	//记录以下当前时间和文件路径并把所有的map/chan都初始化一下。
@@ -100,6 +102,8 @@ func New(opts *Options) (*NSQD, error) {
 		optsNotificationChan: make(chan struct{}, 1),
 		dl:                   dirlock.New(dataPath),
 	}
+	//客户端创建完毕后可直接使用httpcli.Get,httpcli.Post
+	//如果我们创建的客户端所有属性都用默认值的话可用httpcli:=&http.Client{}
 	httpcli := http_api.NewClient(nil, opts.HTTPClientConnectTimeout, opts.HTTPClientRequestTimeout) //设置http连接的超时时间，没有用默认的。
 	n.ci = clusterinfo.New(n.logf, httpcli)
 

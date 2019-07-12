@@ -13,7 +13,7 @@ import (
 	)
 
 type Options struct {
-	// basic options
+	//这些tag是会被用在解析的时候用到，flag表示这个参数可以从命令行进行配置，cfg表示这个参数可以从配置文件进行配置。
 	ID        int64       `flag:"node-id" cfg:"id"`
 	LogLevel  lg.LogLevel `flag:"log-level"`
 	LogPrefix string      `flag:"log-prefix"`

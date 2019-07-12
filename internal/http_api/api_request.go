@@ -23,9 +23,9 @@ func NewDeadlineTransport(connectTimeout time.Duration, requestTimeout time.Dura
 			DualStack: true,
 		}).DialContext,
 		ResponseHeaderTimeout: requestTimeout, //设置读取response header的时间（发送请求后，读完返回包头的时间，不包括读返回body的时间），默认是0，无限等待
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
+		MaxIdleConns:          100, //连接池对所有host的最大连接数量，默认无穷大
+		IdleConnTimeout:       90 * time.Second, //控制连接池中一个连接可以idle多长时间。
+		TLSHandshakeTimeout:   10 * time.Second, //限制 TLS握手的时间
 	}
 	return transport
 }
@@ -40,7 +40,7 @@ func NewClient(tlsConfig *tls.Config, connectTimeout time.Duration, requestTimeo
 	return &Client{
 		c: &http.Client{
 			Transport: transport,
-			Timeout:   requestTimeout,//这个超时时间管的太宽了。其覆盖了请求的全部过程，从连接建立一直到获得请求结果。
+			Timeout:   requestTimeout,//这个超时时间管的太宽了。其覆盖了一个请求的全部过程，从连接建立一直到获得响应结果。
 		},
 	}
 }

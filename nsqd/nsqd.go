@@ -90,6 +90,7 @@ func New(opts *Options) (*NSQD, error) {
 		//LstdFlags= Ldate | Ltime,Lmicroseconds表示把时间的毫秒部分也输出出来
 		//注意此处，无论谁实现了接口中的方法都可以赋值给这个接口类型，由于是指针实现了opts.Logger的output函数，所以就不能将*log.New赋值给右边，只能将log.New赋值给右边。
 		//log.New返回的是标准库的logger
+		//我们要接收log.New得到的对象，此处是自定义了一个interface的对象opts.Logger，注意这种写法。
 		opts.Logger = log.New(os.Stderr, opts.LogPrefix, log.Ldate|log.Ltime|log.Lmicroseconds) //opts.Logger在n.logf中被用到
 	}
 	//记录以下当前时间和文件路径并把所有的map/chan都初始化一下。
@@ -105,17 +106,17 @@ func New(opts *Options) (*NSQD, error) {
 	//客户端创建完毕后可直接使用httpcli.Get,httpcli.Post
 	//如果我们创建的客户端所有属性都用默认值的话可用httpcli:=&http.Client{}
 	httpcli := http_api.NewClient(nil, opts.HTTPClientConnectTimeout, opts.HTTPClientRequestTimeout) //设置http连接的超时时间，没有用默认的。
-	n.ci = clusterinfo.New(n.logf, httpcli)
+	n.ci = clusterinfo.New(n.logf, httpcli) //第一个参数是一个logf函数的指针，现在先存放到nsqd结构体中的ci元素上，以后在使用这个函数的时候传入参数就行了，比如162行的n.logf（，，）。
 
 	n.lookupPeers.Store([]*lookupPeer{}) //n.lookupPeers是atomic.Value类型，存放需要做并发保护的变量
-	n.swapOpts(opts)                     //原子操作，把opts存到NSQD.opts这个变量中。
+	n.swapOpts(opts) //原子操作，把新的opts存到NSQD.opts这个变量中，其实是替换NSQD中的opts变量。
 	n.errValue.Store(errStore{})
 
-	err = n.dl.Lock() // 锁定数据目录（Exit函数中解锁）
+	err = n.dl.Lock() //linux中回用到。锁定数据目录（Exit函数中解锁）
 	if err != nil { //失败（锁不上）就退出，说明其他实例在访问
 		return nil, fmt.Errorf("--data-path=%s in use (possibly by another instance of nsqd)", dataPath)
 	}
-	// 最大的压缩比率等级
+	// 最大的压缩比率等级，值越高压缩率越好，但是 CPU 负载也高。
 	if opts.MaxDeflateLevel < 1 || opts.MaxDeflateLevel > 9 {
 		return nil, errors.New("--max-deflate-level must be [1,9]")
 	}

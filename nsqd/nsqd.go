@@ -103,7 +103,6 @@ func New(opts *Options) (*NSQD, error) {
 		optsNotificationChan: make(chan struct{}, 1),
 		dl:                   dirlock.New(dataPath),
 	}
-	//客户端创建完毕后可直接使用httpcli.Get,httpcli.Post
 	//如果我们创建的客户端所有属性都用默认值的话可用httpcli:=&http.Client{}
 	httpcli := http_api.NewClient(nil, opts.HTTPClientConnectTimeout, opts.HTTPClientRequestTimeout) //设置http连接的超时时间，没有用默认的。
 	n.ci = clusterinfo.New(n.logf, httpcli) //第一个参数是一个logf函数的指针，现在先存放到nsqd结构体中的ci元素上，以后在使用这个函数的时候传入参数就行了，比如162行的n.logf（，，）。
@@ -267,6 +266,7 @@ func (n *NSQD) Main() error {
 	n.waitGroup.Wrap(func() {
 		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf)) //tcp服务，tcp的处理函数和nsqlookupd中的不一样。它可以PUB
 	})
+	//注意：下面实现了如何根据listen句柄来构建http服务，学了一招。
 	httpServer := newHTTPServer(ctx, false, n.getOpts().TLSRequired == TLSRequired)
 	n.waitGroup.Wrap(func() {
 		exitFunc(http_api.Serve(n.httpListener, httpServer, "HTTP", n.logf)) //http服务。可以PUB

@@ -33,13 +33,15 @@ func NewDeadlineTransport(connectTimeout time.Duration, requestTimeout time.Dura
 type Client struct {
 	c *http.Client
 }
-
+//要管理HTTP客户端的头域、重定向策略、整体超时和其他设置，创建一个Client
+//要管理代理、TLS配置、keep-alive、压缩和其他设置，则创建一个Transport
+//Client和Transport类型都可以安全的被多个go协程同时使用。出于效率考虑，应该一次建立、尽量重用。
 func NewClient(tlsConfig *tls.Config, connectTimeout time.Duration, requestTimeout time.Duration) *Client {
 	transport := NewDeadlineTransport(connectTimeout, requestTimeout)
 	transport.TLSClientConfig = tlsConfig
 	return &Client{
 		c: &http.Client{
-			Transport: transport,
+			Transport: transport, //// 如果 Transport 为 nil，则使用 DefaultTransport
 			Timeout:   requestTimeout,//这个超时时间管的太宽了。其覆盖了一个请求的全部过程，从连接建立一直到获得响应结果。
 		},
 	}

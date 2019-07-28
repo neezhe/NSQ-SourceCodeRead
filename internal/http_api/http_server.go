@@ -22,11 +22,12 @@ func (l logWriter) Write(p []byte) (int, error) {
 func Serve(listener net.Listener, handler http.Handler, proto string, logf lg.AppLogFunc) error {
 	logf(lg.INFO, "%s: listening on %s", proto, listener.Addr())
 
-	server := &http.Server{ //实例化http.Server模块
-		Handler:  handler,
+	server := &http.Server{ //实例化http.Server模块，Server中其实开可以设置请求的读取超时时间/响应的写入超时时间/错误日志记录器等。
+		Handler:  handler, //此处指定的是多路复用器，是httprouter的多路复用器包了一层的处理器。
 		ErrorLog: log.New(logWriter{logf}, "", 0),
 	}
-	err := server.Serve(listener) //开启http服务
+	//server.ListenAndServe() //其实此处调用server.ListenAndServe() 就够了，但是下面server.Serve也是一个意思，因为不需要解析ip和端口了，直接操作监听句柄。
+	err := server.Serve(listener) //开启http服务，学习一下，如何根据listener监听http服务
 	// theres no direct way to detect this error because it is not exposed
 	if err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
 		return fmt.Errorf("http.Serve() error - %s", err)

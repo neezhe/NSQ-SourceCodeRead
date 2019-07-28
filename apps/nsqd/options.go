@@ -94,17 +94,17 @@ func (cfg config) Validate() {
 }
 //通过命令行参数，修改默认配置
 func nsqdFlagSet(opts *nsqd.Options) *flag.FlagSet {
-	//flag包里有3中用法。此处的flagSet.Bool和默认的flag.Bool其实底层调用的一毛一样，只不过NewFlagSet就不用事先声明被赋值的变量，在flagSet.Bool内部已经声明了这个变量
-	//下面的操作只是把第二个参数表示的默认值与第一个参数表示的变量关联起来，以后要用这个变量就直接flagSet.lookup("version")
+	//此处的flagSet.Bool和默认的flag.Bool其实底层调用的一毛一样，只不过NewFlagSet就不用事先声明被赋值的变量，在flagSet.Bool内部已经声明了这个变量
+	//第二点与flag不同的是调用parser函数的时候有参数。
 	flagSet := flag.NewFlagSet("nsqd", flag.ExitOnError) //第一个参数是可以任意定的.但第二个参数,则决定了参数解析出错时错误处理方式.
 	// basic options
 	flagSet.Bool("version", false, "print version string")
 	flagSet.String("config", "", "path to config file")
 
 	logLevel := opts.LogLevel  //将flag(-log-level)绑定到自定义变量上(指自己定义的变量)，自定义变量需要实现Value接口。
-	//为何此处要绑到自定义的变量？首先因为这个变量是特殊类型，不是bool/string等。既然是特殊的类型，那么如何把从flag读到的值放到这个特殊类型中?
+	//为何此处要绑到自定义的变量？首先因为这个变量是特殊类型，不是bool/string等基本类型。既然是特殊的类型，默认值为该变量类型的初始值。那么如何把从flag读到的值放到这个特殊类型中?
 	//就需要Var方法，前提是logLevel这个变量的类型实现了String和Set方法，其中Set方法决定了从flag读到的值如何存放到这个自定义变量里去。
-	flagSet.Var(&logLevel, "log-level", "set log verbosity: debug, info, warn, error, or fatal")
+	flagSet.Var(&logLevel, "log-level", "set log verbosity: debug, info, warn, error, or fatal")//当命令行存在-log-level时开始解析。
 	flagSet.String("log-prefix", "[nsqd] ", "log message prefix")
 	flagSet.Bool("verbose", false, "[deprecated] has no effect, use --log-level")
 

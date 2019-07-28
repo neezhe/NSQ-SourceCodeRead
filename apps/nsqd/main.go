@@ -46,6 +46,7 @@ func (p *program) Start() error {
 
 	rand.Seed(time.Now().UTC().UnixNano()) //设置随机数种子，后面所有的随机数的操作都是根据这个种子来的，能确保是随机的。
 	// 3. 若 version 参数存在，则打印版本号，然后退出
+	//flagSet.Lookup("version").Value.String()这一句只会打印这个变量的字符串形式，内部会将bool转化为string
 	if flagSet.Lookup("version").Value.(flag.Getter).Get().(bool) {//对于非string类型的flag取值才会用到flag.Getter，这玩在flag包里实现了除string类型外的Get方法，当然绑定自定义变量的时候也需要自己实现了String/Set/Get方法。
 		fmt.Println(version.String("nsqd"))
 		os.Exit(0)
@@ -62,7 +63,7 @@ func (p *program) Start() error {
 	}
 	cfg.Validate() //验证配置是否合法，主要关于TLS的验证
 
-	options.Resolve(opts, flagSet, cfg)//要学习反射，把下面这个函数看懂就行了
+	options.Resolve(opts, flagSet, cfg)//要学习反射，把下面这个函数看懂就行了，这里面为何用反射，因为，我们要把cfg的值赋值给opts，但是却不知道cfg中值的具体类型，在运行时才能确定的变量需要用反射来处理
 	// 5. 通过给定参数 opts 构建 nsqd 实例
 	nsqd, err := nsqd.New(opts)
 	if err != nil {

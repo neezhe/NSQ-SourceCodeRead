@@ -40,19 +40,21 @@ type httpServer struct {
 
 func newHTTPServer(ctx *context, tlsEnabled bool, tlsRequired bool) *httpServer {
 	log := http_api.Log(ctx.nsqd.logf)
-
-	router := httprouter.New()
+	//在标准库中创建一个处理器的唯一要求就是实现ServerHTTP函数，因为这个ServerHTTP函数是golang留给开发者的，让开发者自己决定怎么处理发来的请求，
+	//默认的多路复用器实现了ServerHTTP函数，所以他是一个处理器，只不过这个这个处理器里面添加了路径匹配，
+	//当然可以自己实现一个处理器不做路径匹配，那么所有请求的处理函数就不会因为路径不同而被执行不同的处理函数。
+	router := httprouter.New()//http标准库中的多路复用器有弊端，此处使用httprouter包定义的多路复用器，其优势是可以提取路由中的变量。
 	router.HandleMethodNotAllowed = true
 	router.PanicHandler = http_api.LogPanicHandler(ctx.nsqd.logf)
 	router.NotFound = http_api.LogNotFoundHandler(ctx.nsqd.logf)
 	router.MethodNotAllowed = http_api.LogMethodNotAllowedHandler(ctx.nsqd.logf)
-	s := &httpServer{
+	s := &httpServer{ //router已经是一个多路复用器了，但是此处又包了一层httpServer，return的是httpServer，所以httpServer必须要实现ServerHTTP，并且其ServerHTTP最终调用的必须要是router的ServerHTTP
 		ctx:         ctx,
 		tlsEnabled:  tlsEnabled,
 		tlsRequired: tlsRequired,
 		router:      router,
 	}
-
+	//http_api.Decorate返回的是httprouter的处理器函数，
 	router.Handle("GET", "/ping", http_api.Decorate(s.pingHandler, log, http_api.PlainText))
 	router.Handle("GET", "/info", http_api.Decorate(s.doInfo, log, http_api.V1)) //版本
 
@@ -98,7 +100,7 @@ func setBlockRateHandler(w http.ResponseWriter, req *http.Request, ps httprouter
 	runtime.SetBlockProfileRate(rate)
 	return nil, nil
 }
-
+//一个处理器就是一个拥有ServeHTTP的对象
 func (s *httpServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if !s.tlsEnabled && s.tlsRequired {
 		resp := fmt.Sprintf(`{"message": "TLS_REQUIRED", "https_port": %d}`,
@@ -109,7 +111,7 @@ func (s *httpServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		io.WriteString(w, resp)
 		return
 	}
-	s.router.ServeHTTP(w, req)
+	s.router.ServeHTTP(w, req) //这个就是路由对应真实处理函数了。
 }
 
 func (s *httpServer) pingHandler(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {

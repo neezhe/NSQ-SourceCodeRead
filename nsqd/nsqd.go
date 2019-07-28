@@ -254,16 +254,16 @@ func (n *NSQD) Main() error {
 	exitCh := make(chan error) // 2. 同 NSQLookupd 类似，构建一个退出 hook 函数，且在退出时仅执行一次
 	var once sync.Once
 	exitFunc := func(err error) {
-		once.Do(func() {
+		once.Do(func() {  //无论once处在多少个协程里面，Do函数的参数表示的函数只会被执行一次。
 			if err != nil {
 				n.logf(LOG_FATAL, "%s", err)
 			}
-			exitCh <- err
+			exitCh <- err //对应288行
 		})
 	}
 	//tcp服务可以当生产者发消息也可以当消费者订阅消息，http服务可以用来当生产者发消息（不可以订阅）还可以提供给nsqadmin获取该nsqd本地topic和channel信息
 	tcpServer := &tcpServer{ctx: ctx}
-	n.waitGroup.Wrap(func() {
+	n.waitGroup.Wrap(func() { //Wrap里面开启了一个协程运行func(){...}，就会运行exitFunc
 		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf)) //tcp服务，tcp的处理函数和nsqlookupd中的不一样。它可以PUB
 	})
 	//注意：下面实现了如何根据listen句柄来构建http服务，学了一招。
@@ -272,7 +272,7 @@ func (n *NSQD) Main() error {
 		exitFunc(http_api.Serve(n.httpListener, httpServer, "HTTP", n.logf)) //http服务。可以PUB
 	})
 	if n.tlsConfig != nil && n.getOpts().HTTPSAddress != "" {
-		httpsServer := newHTTPServer(ctx, true, true)
+		httpsServer := newHTTPServer(ctx, true, true) //参数都为true
 		n.waitGroup.Wrap(func() { //它也能在第三个端口监听 HTTPS
 			exitFunc(http_api.Serve(n.httpsListener, httpsServer, "HTTPS", n.logf)) //https服务
 		})

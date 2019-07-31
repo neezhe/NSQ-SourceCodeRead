@@ -274,7 +274,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			flusherChan = nil
 			// force flush
 			client.writeLock.Lock()
-			err = client.Flush() // 强制刷新缓冲区
+			err = client.Flush() // 强制下刷缓冲区
 			client.writeLock.Unlock()
 			if err != nil {
 				goto exit
@@ -300,7 +300,11 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 		}
 
 		select { // 这里负责执行Client 的各种事件
-		case <-flusherChan: // 定时刷新消息发送缓冲区
+		//语法：1.关闭channel后，可以继续向channel接收数据（接收的为该类型的0值，可解除阻塞），但是无法向其写入数据。
+		//2.没有初始化或者被设为nil的channel，无论收发都会被阻塞，它没有被分配内存空间,相当于这个channel被select忽略。
+		//3.无缓冲的channel，没数据取和数据没被取的情况都会阻塞
+		//4.有缓冲的，没数据的时候才阻塞，写满的时候才阻塞，其他时候不阻塞。
+		case <-flusherChan: // 定时刷新消息发送缓冲区。
 			// if this case wins, we're either starved
 			// or we won the race between other channels...
 			// in either case, force flush

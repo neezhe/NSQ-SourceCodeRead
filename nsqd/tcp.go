@@ -18,8 +18,8 @@ func (p *tcpServer) Handle(clientConn net.Conn) {
 	// the version of the protocol that it intends to communicate, this will allow us
 	// to gracefully upgrade the protocol away from text/line oriented to whatever...
 	buf := make([]byte, 4)
-	_, err := io.ReadFull(clientConn, buf)//从流中读取4个字节的数据到buf，作为协议版本号，被读取的数据，会从流中截取掉
-	if err != nil {
+	_, err := io.ReadFull(clientConn, buf)//从流中读取4个字节的数据到buf，作为协议版本号，被读取的数据，会从流中截取掉，用LimitReader()似乎更好？
+	if err != nil { //若客户端关闭（EOF err）或者读到的数据不对,那服务端也需要关闭
 		p.ctx.nsqd.logf(LOG_ERROR, "failed to read protocol version - %s", err)
 		clientConn.Close()
 		return

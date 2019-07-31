@@ -545,7 +545,7 @@ func (c *clientV2) Flush() error {
 		c.SetWriteDeadline(zeroTime)
 	}
 
-	err := c.Writer.Flush()
+	err := c.Writer.Flush() //为什么bufio有flush函数,因为他有缓存，需要把缓存数据提交到磁盘，io.writer函数就是直接写入到此磁盘的，没有缓存。
 	if err != nil {
 		return err
 	}

@@ -58,7 +58,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 		// 但是如果还是超时了, 那就肯定是 网络连接除了问题
 		//如果 2 个 heartbeat响应没有被应答，nsqd将会超时，并且强制关闭客户端连接
 		if client.HeartbeatInterval > 0 {
-			client.SetReadDeadline(time.Now().Add(client.HeartbeatInterval * 2))
+			client.SetReadDeadline(time.Now().Add(client.HeartbeatInterval * 2)) //设的也是绝对时间，表示刚accept到读完请求body的时长（已经包括3次握手）。
 		} else {
 			//若客户端未设置 HeartbeatInterval，则读取等待不会超时。 不设置做心跳则不设置读超时
 			client.SetReadDeadline(zeroTime)
@@ -67,7 +67,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 		// ReadSlice does not allocate new space for the data each request
 		// ie. the returned slice is only valid until the next call to it
 		// 2.1 读取命令请求，并对它进行解析，解析命令的类型及参数
-		line, err = client.Reader.ReadSlice('\n')
+		line, err = client.Reader.ReadSlice('\n')//读取数据直到遇到指定的界定符为止，第二次读会覆盖第一次读的数据。
 		if err != nil {
 			if err == io.EOF {
 				err = nil
@@ -149,17 +149,22 @@ func (p *protocolV2) SendMessage(client *clientV2, msg *Message) error {
 
 func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error {
 	client.writeLock.Lock() // 因为client的处理还有一个 messagePump线程, 所以发送要锁
-
+	//此处设的是发送心跳的超时，在ioloop中设置的是读心跳包的超时。
 	var zeroTime time.Time
 	if client.HeartbeatInterval > 0 {
+		//SetWriteDeadline和SetReadDeadline是服务端才有的设置。就是说我服务端对数据处理并返回结果的这个时间不能无限制的长，即ServerHTTP函数有时间限制，不然占着资源部释放很危险。
+		//SetWriteDeadline时间计算正常是从request header的读取结束开始，到 response write结束为止 (也就是 ServeHTTP 方法的声明周期)。
+		//这玩意在每次发送的时候都会设置一遍，因为设的是个绝对值而非相对值。client调用这个方法实际是conn在调用这个方法。
 		client.SetWriteDeadline(time.Now().Add(client.HeartbeatInterval))
 	} else {
-		client.SetWriteDeadline(zeroTime)
+		client.SetWriteDeadline(zeroTime) //0表示无超时，可无限等待。
 	}
 	//V2协议版本发送给client, 是使用[(4byte)消息长度 , (4byte)消息类型, (载体)] 的 帧格式
 	//但是为什么这个格式的封装不写在 protocal_v2.go 而是在protocaol定义上?
 	//个人觉得, 具体封包格式的 '具体实现' 应该在 '协议的具体实现'里, 也就是 protocal_v2,而不是 '协议的定义' 里
-	_, err := protocol.SendFramedResponse(client.Writer, frameType, data)
+	_, err := protocol.SendFramedResponse(client.Writer, frameType, data) //为何client.Writer成了io.writer?io包中只是定义了读取器写入器等接口，但真正实现这些接口并不在io包中，
+	//比如bufio中就实现了带缓冲的读取器和写入器，此外net.Conn, os.Stdin, os.File/strings.Reader/bytes.Reader，bytes.Buffer/bufio.Reader/Writer等对象都实现了相应功能的读取器和写入器。
+	//注意一个语法细节，client.Writer是*bufio.Writer类型而非bufio.Writer，是因为实现io.Writer接口的是*bufio.Writer
 	if err != nil {
 		client.writeLock.Unlock()
 		return err
@@ -176,7 +181,7 @@ func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error 
 
 func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 	if bytes.Equal(params[0], []byte("IDENTIFY")) { //这个命令不需要做认证
-		return p.IDENTIFY(client, params)
+		return p.IDENTIFY(client, params) //更新服务器上的客户端元数据和协商功能。服务器会根据客户端请求的内容返回“ok”或一个JSON数据，注意：客户端发送了 feature_negotiation (并且服务端支持)，响应体将会是 JSON
 	}
 	err := enforceTLSPolicy(client, p, params[0]) // client是否做了认证
 	if err != nil {
@@ -267,17 +272,17 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 
 	for {
 		//subChannel == nil即此客户端未订阅任何channel或者客户端还未准备好接收消息
-		if subChannel == nil || !client.IsReadyForMessages() { //第一次进入到此messagePump函数中时，会进入到此if语句，因为subChannel == nil；没准备好也会进入此分支。
+		if subChannel == nil || !client.IsReadyForMessages() { //subChannel == nil；没准备好也会进入此分支。
 			// the client is not ready to receive messages...
 			memoryMsgChan = nil //当客户端订阅的channel还未创建完毕时，或者没有准备好时，与该channel相关联的用于接收消息的内存消息队列和磁盘消息队列都会被置位空，进而不会接收到任何消息。
 			backendMsgChan = nil
 			flusherChan = nil
 			// force flush
-			client.writeLock.Lock()
+			client.writeLock.Lock() //client.writeLock是个读写锁
 			err = client.Flush() // 强制下刷缓冲区
 			client.writeLock.Unlock()
 			if err != nil {
-				goto exit
+				goto exit //当for 和 select结合使用时，break语言是无法跳出for之外的，因此若要break出来，这里需要加一个标签，使用goto， 或者break 到具体的位置。
 			}
 			flushed = true
 		} else if flushed {
@@ -298,10 +303,10 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			backendMsgChan = subChannel.backend.ReadChan()
 			flusherChan = outputBufferTicker.C
 		}
-
+		//for循环中select的语法见youdao
 		select { // 这里负责执行Client 的各种事件
 		//语法：1.关闭channel后，可以继续向channel接收数据（接收的为该类型的0值，可解除阻塞），但是无法向其写入数据。
-		//2.没有初始化或者被设为nil的channel，无论收发都会被阻塞，它没有被分配内存空间,相当于这个channel被select忽略。
+		//2.被初始化但是没有值的channel或者没有初始化或者被设为nil的channel，其case永远不会被进入，但是被close的channel,其被读的case是可以进入的，它没有被分配内存空间,相当于这个channel被select忽略。
 		//3.无缓冲的channel，没数据取和数据没被取的情况都会阻塞
 		//4.有缓冲的，没数据的时候才阻塞，写满的时候才阻塞，其他时候不阻塞。
 		case <-flusherChan: // 定时刷新消息发送缓冲区。
@@ -316,7 +321,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			}
 			flushed = true
 			// 客户端处理消息的能力发生了变化会触发此处解除阻塞，比如客户端刚消费了某个消息
-		case <-client.ReadyStateChan: //这个case下面没有什么要处理的，目的就是解除阻塞，进行for循环上面的if语句判断。
+		case <-client.ReadyStateChan: //这个case下面没有什么要处理的，目的就是解除阻塞，进行下一轮for循环重新执行一下上面的if语句。
 		case subChannel = <-subEventChan: //subChannel在下面被用到，subChannel就是订阅Chnanel,Client需要发送一个SUB请求来订阅Channel
 			// 将 subEventChan 重置为nil，原因表示之后不能从此通道中接收到消息
 			// 而置为nil的原因是，在SUB命令请求方法中第一行即为检查此客户端是否处于 stateInit 状态，
@@ -410,7 +415,10 @@ exit:
 		p.ctx.nsqd.logf(LOG_ERROR, "PROTOCOL(V2): [%s] messagePump error - %s", client, err)
 	}
 }
-
+//命令格式：
+//IDENTIFY\n
+//[ 4-byte size in bytes ][ N-byte JSON data ]
+//长度，json数据
 func (p *protocolV2) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error) {
 	var err error
 
@@ -418,7 +426,7 @@ func (p *protocolV2) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error)
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot IDENTIFY in current state")
 	}
 
-	bodyLen, err := readLen(client.Reader, client.lenSlice)
+	bodyLen, err := readLen(client.Reader, client.lenSlice) //lenSlice之只是一个临时用来放数据的切片，没什么重要性
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_BODY", "IDENTIFY failed to read body size")
 	}
@@ -448,7 +456,7 @@ func (p *protocolV2) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error)
 
 	p.ctx.nsqd.logf(LOG_DEBUG, "PROTOCOL(V2): [%s] %+v", client, identifyData)
 
-	err = client.Identify(identifyData)
+	err = client.Identify(identifyData) //根据输入改变client结构体中身份信息
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_BODY", "IDENTIFY "+err.Error())
 	}
@@ -457,7 +465,7 @@ func (p *protocolV2) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error)
 	if !identifyData.FeatureNegotiation {
 		return okBytes, nil
 	}
-
+	//如果上面这行FeatureNegotiation为true,那么才会进入到下面的的json返回处理
 	tlsv1 := p.ctx.nsqd.tlsConfig != nil && identifyData.TLSv1
 	deflate := p.ctx.nsqd.getOpts().DeflateEnabled && identifyData.Deflate
 	deflateLevel := 6

@@ -25,19 +25,19 @@ const (
 )
 
 type identifyDataV2 struct {
-	ClientID            string `json:"client_id"`
-	Hostname            string `json:"hostname"`
+	ClientID            string `json:"client_id"` //消费者发布者也需要用此来区分
+	Hostname            string `json:"hostname"` //客户端的主机名
 	HeartbeatInterval   int    `json:"heartbeat_interval"`
-	OutputBufferSize    int    `json:"output_buffer_size"`
-	OutputBufferTimeout int    `json:"output_buffer_timeout"`
-	FeatureNegotiation  bool   `json:"feature_negotiation"`
-	TLSv1               bool   `json:"tls_v1"`
-	Deflate             bool   `json:"deflate"`
-	DeflateLevel        int    `json:"deflate_level"`
-	Snappy              bool   `json:"snappy"`
-	SampleRate          int32  `json:"sample_rate"`
-	UserAgent           string `json:"user_agent"`
-	MsgTimeout          int    `json:"msg_timeout"`
+	OutputBufferSize    int    `json:"output_buffer_size"` //当 nsqd 写到这个客户端时将会用到的缓存的大小（字节数）
+	OutputBufferTimeout int    `json:"output_buffer_timeout"` //超时后，nsqd 缓冲的数据都会刷新到此客户端
+	FeatureNegotiation  bool   `json:"feature_negotiation"` //用来标示客户端支持的协商特性。如果服务器接受，将会以 JSON 的形式发送支持的特性和元数据。
+	TLSv1               bool   `json:"tls_v1"` //允许 TLS 来连接，客户端读取 IDENTIFY 响应后，必须立即开始 TLS 握手。完成 TLS 握手后服务器将会响应 OK.
+	Deflate             bool   `json:"deflate"` //允许解压缩这次连接
+	DeflateLevel        int    `json:"deflate_level"` //值越高压缩率越好，但是 CPU 负载也高
+	Snappy              bool   `json:"snappy"` //允许 snappy 压缩这次连接，有专门的第3方库来做这个压缩
+	SampleRate          int32  `json:"sample_rate"` //投递此次连接的消息接收率。
+	UserAgent           string `json:"user_agent"` //这个客户端的代理字符串
+	MsgTimeout          int    `json:"msg_timeout"` //配置服务端发送消息给客户端的超时时间
 }
 
 type identifyEvent struct {
@@ -119,7 +119,9 @@ func newClientV2(id int64, conn net.Conn, ctx *context) *clientV2 {
 		ID:  id,
 		ctx: ctx,
 
-		Conn: conn,
+		Conn: conn, //注意此处接口类型赋值,为何是Conn而不是net.Conn？接口类型的赋值不需要带上包名。
+		// 此处是继承，调用父类的方法，方法中用到的属性只和父类有关，除非子类重写这个方法。
+		//所以newClientV2调用Write函数实际上是Conn在调用write函数。
 
 		Reader: bufio.NewReaderSize(conn, defaultBufferSize),
 		Writer: bufio.NewWriterSize(conn, defaultBufferSize),
@@ -147,7 +149,7 @@ func newClientV2(id int64, conn net.Conn, ctx *context) *clientV2 {
 
 		pubCounts: make(map[string]uint64),
 	}
-	c.lenSlice = c.lenBuf[:]
+	c.lenSlice = c.lenBuf[:] //lenBuf在clientV2本身就已经分配了空间，lenBuf[:]表示将这个空间复用起来。从切片0到len-1的范围，这就表示lenSlice和lenBuf一样？
 	return c
 }
 

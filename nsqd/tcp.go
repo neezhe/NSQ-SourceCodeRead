@@ -14,11 +14,13 @@ type tcpServer struct {
 func (p *tcpServer) Handle(clientConn net.Conn) {
 	p.ctx.nsqd.logf(LOG_INFO, "TCP: new client(%s)", clientConn.RemoteAddr())
 
-	// The client should initialize itself by sending a 4 byte sequence indicating
-	// the version of the protocol that it intends to communicate, this will allow us
-	// to gracefully upgrade the protocol away from text/line oriented to whatever...
+	//nsq已经和客户端约定了必须要发送4字节的protocolMagic来表明使用的协议版本。
 	buf := make([]byte, 4)
-	_, err := io.ReadFull(clientConn, buf)//从流中读取4个字节的数据到buf，作为协议版本号，被读取的数据，会从流中截取掉，用LimitReader()似乎更好？
+	//因为一般的read就算没有读到指定长度也会返回，一般需要循环读取，所以此处用ReadFull表示必须读到指定长度的数据后再返回。
+	//在golang中没有阻塞和非阻塞的设置，所以当read的底层缓冲为空或者write的底层缓冲满了的时候，就会导致阻塞，这时候如果不希望永久阻塞，就会在服务端的read和write之前设置SetReadDeadline/SetWriteDeadline
+	//收到FIN报文时，read()才会读到EOF.如果此处没有读满4个字节，而且也没有收到EOF,那么将一直阻塞，为了防止阻塞才会设置超时。close和shutdown会发送FIN报文。
+	//如果读到的数据大于4字节，只读出4字节，那么不会阻塞。
+	_, err := io.ReadFull(clientConn, buf)//从流中读取4个字节的数据到buf，作为协议版本号，被读取的数据，会从流中被清掉，后面不会再读到重复的数据，用LimitReader()似乎更好？
 	if err != nil { //若客户端关闭（EOF err）或者读到的数据不对,那服务端也需要关闭
 		p.ctx.nsqd.logf(LOG_ERROR, "failed to read protocol version - %s", err)
 		clientConn.Close()

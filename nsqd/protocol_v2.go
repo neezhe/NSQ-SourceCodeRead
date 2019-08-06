@@ -52,11 +52,10 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 
 	//下面开始处理client请求，开始循环读取客户端请求然后解析参数，进行处理, 这个工作在客户端的主协程处理
 	for {
-		// 如果 client 设置需要做心跳检查, 则设置读超时为两倍心跳检查间隔
-		// 也就是说, 在这个时间里, 正常情况下, client肯定会在这个间隔内发一个心跳包过来
-		// read不会因为client本来就没消息而超时,
-		// 但是如果还是超时了, 那就肯定是 网络连接除了问题
-		//如果 2 个 heartbeat响应没有被应答，nsqd将会超时，并且强制关闭客户端连接
+		//V2版本的协议让客户端拥有心跳功能。每隔 30 秒（默认设置），nsqd 将会发送一个 _heartbeat_ 响应，并期待返回。（在messagePump就一直有一个心跳在发送）
+		//如果客户端空闲其回复心跳是发了一个NOP命令。如果 2 个 _heartbeat_ 响应没有被应答， nsqd将会超时（下面设置的），并且强制关闭客户端连接。IDENTIFY 命令可以用来改变/禁用这个行为（因为可以设置超时时间等属性）。
+		// read不会因为client本来就没消息而超时，只会阻塞,
+		//如果 2个 heartbeat响应没有被应答（因为最长也也不会超过这个时间），nsqd将会强制关闭客户端连接
 		if client.HeartbeatInterval > 0 {
 			client.SetReadDeadline(time.Now().Add(client.HeartbeatInterval * 2)) //设的也是绝对时间，表示刚accept到读完请求body的时长（已经包括3次握手）。
 		} else {
@@ -180,7 +179,7 @@ func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error 
 }
 
 func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
-	if bytes.Equal(params[0], []byte("IDENTIFY")) { //这个命令不需要做认证
+	if bytes.Equal(params[0], []byte("IDENTIFY")) { //这个命令不需要做认证。按照客户端的调用逻辑，是建立连接成功后，马上发送一个MagicV1的消息不等返回就马上发送"IDENTIFY"命令（表明客户端的身份信息），并接受其返回值。
 		return p.IDENTIFY(client, params) //更新服务器上的客户端元数据和协商功能。服务器会根据客户端请求的内容返回“ok”或一个JSON数据，注意：客户端发送了 feature_negotiation (并且服务端支持)，响应体将会是 JSON
 	}
 	err := enforceTLSPolicy(client, p, params[0]) // client是否做了认证
@@ -204,7 +203,7 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 		return p.MPUB(client, params)
 	case bytes.Equal(params[0], []byte("DPUB")):
 		return p.DPUB(client, params)
-	case bytes.Equal(params[0], []byte("NOP")):
+	case bytes.Equal(params[0], []byte("NOP")): //若客户端空闲，则对服务端心跳的回复为此命令
 		return p.NOP(client, params)
 	case bytes.Equal(params[0], []byte("TOUCH")):
 		return p.TOUCH(client, params)
@@ -212,7 +211,7 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 		return p.SUB(client, params)
 	case bytes.Equal(params[0], []byte("CLS")):
 		return p.CLS(client, params)
-	case bytes.Equal(params[0], []byte("AUTH")):
+	case bytes.Equal(params[0], []byte("AUTH")): //TCP独有,如果 IDENTIFY 响应中有 auth_required=true，客户端必须在 SUB, PUB 或 MPUB 命令前前发送 AUTH 。否则，客户端不需要AUTH认证。
 		return p.AUTH(client, params)
 	}
 	return nil, protocol.NewFatalClientErr(nil, "E_INVALID", fmt.Sprintf("invalid command %s", params[0]))
@@ -559,7 +558,10 @@ func (p *protocolV2) IDENTIFY(client *clientV2, params [][]byte) ([]byte, error)
 
 	return nil, nil
 }
-
+//要将nsqd配置为需要授权，需要使用符合auth-http协议的auth服务器指定-auth-http-address=host:port。
+//AUTH\n
+//[ 4-byte size in bytes ][ N-byte Auth Secret ]
+//命令长度，命令内容（是发送的secrete）
 func (p *protocolV2) AUTH(client *clientV2, params [][]byte) ([]byte, error) {
 	if atomic.LoadInt32(&client.State) != stateInit {
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot AUTH in current state")
@@ -598,7 +600,7 @@ func (p *protocolV2) AUTH(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, protocol.NewFatalClientErr(err, "E_AUTH_DISABLED", "AUTH disabled")
 	}
 
-	if err := client.Auth(string(body)); err != nil {
+	if err := client.Auth(string(body)); err != nil { //额外有一个认证服务器，需要自己实现整个认证过程。
 		// we don't want to leak errors contacting the auth server to untrusted clients
 		p.ctx.nsqd.logf(LOG_WARN, "PROTOCOL(V2): [%s] AUTH failed %s", client, err)
 		return nil, protocol.NewFatalClientErr(err, "E_AUTH_FAILED", "AUTH failed")

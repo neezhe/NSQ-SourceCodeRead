@@ -101,7 +101,7 @@ func QueryAuthd(authd string, remoteIP string, tlsEnabled bool, commonName strin
 	v.Set("secret", authSecret)
 	v.Set("common_name", commonName)
 
-	endpoint := fmt.Sprintf("http://%s/auth?%s", authd, v.Encode())
+	endpoint := fmt.Sprintf("http://%s/auth?%s", authd, v.Encode()) //卧槽这玩意还需要调用额外的链接。
 
 	var authState State
 	client := http_api.NewClient(nil, connectTimeout, requestTimeout)

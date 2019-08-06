@@ -105,7 +105,7 @@ type clientV2 struct {
 	lenBuf   [4]byte
 	lenSlice []byte
 
-	AuthSecret string
+	AuthSecret string //这玩意在AUTH命令的时候会被设置
 	AuthState  *auth.State
 }
 
@@ -195,7 +195,7 @@ func (c *clientV2) Identify(data identifyDataV2) error {
 
 	// update the client's message pump
 	select {
-	case c.IdentifyEventChan <- ie:
+	case c.IdentifyEventChan <- ie: //表示客户端的某些属性有改变，通知此与客户端连接绑定在一块的messagePump协程
 	default:
 	}
 

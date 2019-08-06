@@ -50,3 +50,5 @@ profile
 
 # vim stuff
 *.sw[op]
+
+.idea/workspace.xml

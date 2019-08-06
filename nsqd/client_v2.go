@@ -123,7 +123,7 @@ func newClientV2(id int64, conn net.Conn, ctx *context) *clientV2 {
 		// 此处是继承，调用父类的方法，方法中用到的属性只和父类有关，除非子类重写这个方法。
 		//所以newClientV2调用Write函数实际上是Conn在调用write函数。
 
-		Reader: bufio.NewReaderSize(conn, defaultBufferSize),
+		Reader: bufio.NewReaderSize(conn, defaultBufferSize), //实例化bufio.Reader对象生成带缓冲的读取器,指定缓存大小defaultBufferSize，第一个参数是没有缓冲的读取器，
 		Writer: bufio.NewWriterSize(conn, defaultBufferSize),
 
 		OutputBufferSize:    defaultBufferSize,

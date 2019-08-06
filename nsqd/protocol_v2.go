@@ -239,7 +239,7 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 //12.一旦触发了flusherChan分支，则flushed又被设置成true。表明暂时不需要刷新缓冲区，直到nsqd发送了消息给客户端，即触发了memoryMsgChan或backendMsgChan分支；
 //13.然后可能又进入第二个if分支，然后发送消息，刷新缓冲区，反复循环…
 //14.假如某个时刻，消费者的消息处理能力已经变为0了，则此时执行第一个if分支，两个消息队列被重置，执行强刷。显然，此时考虑到消费者已经不能再处理消息了，因此需要“关闭”消息发送的管道。
-func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pump就是水泵的意思，就是把消息抽出来发给client
+func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pump就是水泵的意思
 	var err error
 	var memoryMsgChan chan *Message
 	var backendMsgChan chan []byte
@@ -247,16 +247,15 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 	// NOTE: `flusherChan` is used to bound message latency for
 	// the pathological case of a channel on a low volume topic
 	// with >1 clients having >1 RDY counts
-	var flusherChan <-chan time.Time //表示需要进行显式地刷新（是一个ticker），用于有多个客户端的低容量topic中的channel上的不可控的消息延时。
+	var flusherChan <-chan time.Time //定义一个单向读channel（从管道出），//表示需要进行显式地刷新（是一个ticker），用于有多个客户端的低容量topic中的channel上的不可控的消息延时。
 	var sampleRate int32
 	// 1. 获取客户端的属性
 	subEventChan := client.SubEventChan //subEventChan是客户端有订阅行为的通知channel，订阅一次后会重置为null。
 	identifyEventChan := client.IdentifyEventChan
-	outputBufferTicker := time.NewTicker(client.OutputBufferTimeout)
+	outputBufferTicker := time.NewTicker(client.OutputBufferTimeout) //NewTicker是反复的，NewTimer是一次的。
 	heartbeatTicker := time.NewTicker(client.HeartbeatInterval) //设置和客户端的心跳定时器
-	heartbeatChan := heartbeatTicker.C
+	heartbeatChan := heartbeatTicker.C //heartbeatTicker.C是一个channel,每隔HeartbeatInterval间隔，<-heartbeatTicker.C就可以拿到一个值。
 	msgTimeout := client.MsgTimeout
-
 	// V2 版本的协议采用了选择性地将返回给 client 的数据进行缓冲，即通过减少系统调用频率来提高效率
 	// 只有在两种情况下才采取显式地刷新缓冲数据
 	// 		1. 当 client 还未准备好接收数据。

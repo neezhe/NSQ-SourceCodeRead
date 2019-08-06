@@ -18,11 +18,11 @@ func (l logWriter) Write(p []byte) (int, error) {
 	l.logf(lg.WARN, "%s", string(p))
 	return len(p), nil
 }
-//看过golang的http模块，应该知道http模块最重要的就是http.Handler，就是下面的第二个参数，它提供了路由查找和函数执行功能。
+//看过golang的http模块，应该知道http模块最重要的就是http.Handler(处理器)，就是下面的第二个参数，它可以提供路由查找和函数执行功能。
 func Serve(listener net.Listener, handler http.Handler, proto string, logf lg.AppLogFunc) error {
 	logf(lg.INFO, "%s: listening on %s", proto, listener.Addr())
 
-	server := &http.Server{ //实例化http.Server模块，Server中其实开可以设置请求的读取超时时间/响应的写入超时时间/错误日志记录器等。
+	server := &http.Server{ //实例化http.Server模块，Server中其实可以设置请求的读取超时时间/响应的写入超时时间/错误日志记录器等。
 		Handler:  handler, //此处指定的是多路复用器，是httprouter的多路复用器包了一层的处理器。
 		ErrorLog: log.New(logWriter{logf}, "", 0),
 	}

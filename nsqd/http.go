@@ -54,7 +54,7 @@ func newHTTPServer(ctx *context, tlsEnabled bool, tlsRequired bool) *httpServer 
 		tlsRequired: tlsRequired,
 		router:      router,
 	}
-	//http_api.Decorate返回的是httprouter的处理器函数，
+	//http_api.Decorate返回的是httprouter的处理器函数，httprouter的多路复用器router，使用其Handle函数把路径和真实的处理器绑定在一起。
 	router.Handle("GET", "/ping", http_api.Decorate(s.pingHandler, log, http_api.PlainText))
 	router.Handle("GET", "/info", http_api.Decorate(s.doInfo, log, http_api.V1)) //版本
 

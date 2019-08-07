@@ -195,9 +195,6 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 	case bytes.Equal(params[0], []byte("REQ")):
 		return p.REQ(client, params)
 	case bytes.Equal(params[0], []byte("PUB")):
-		//客户端发送消息的形式：
-		//PUB <topic_name>\n
-		//[ 4-byte size in bytes ][ N-byte binary data ]
 		return p.PUB(client, params)
 	case bytes.Equal(params[0], []byte("MPUB")):
 		return p.MPUB(client, params)
@@ -250,7 +247,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 	var sampleRate int32
 	// 1. 获取客户端的属性
 	subEventChan := client.SubEventChan //subEventChan是客户端有订阅行为的通知channel，订阅一次后会重置为null。
-	identifyEventChan := client.IdentifyEventChan
+	identifyEventChan := client.IdentifyEventChan //这玩意只在处理客户端的IDENTIFY命令的时候会进行操作。
 	outputBufferTicker := time.NewTicker(client.OutputBufferTimeout) //NewTicker是反复的，NewTimer是一次的。
 	heartbeatTicker := time.NewTicker(client.HeartbeatInterval) //设置和客户端的心跳定时器
 	heartbeatChan := heartbeatTicker.C //heartbeatTicker.C是一个channel,每隔HeartbeatInterval间隔，<-heartbeatTicker.C就可以拿到一个值。
@@ -283,23 +280,19 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 				goto exit //当for 和 select结合使用时，break语言是无法跳出for之外的，因此若要break出来，这里需要加一个标签，使用goto， 或者break 到具体的位置。
 			}
 			flushed = true
-		} else if flushed {
-			// last iteration we flushed...
-			// do not select on the flusher ticker channel
+		} else if flushed {//已经flush过了
 			// 表明上一个循环中，我们已经显式地刷新过，准确而言，应该上从client.SubEventChan中接收到了subChannelclient订阅某个 channel 导致的）
 			// 因此初始化memoryMsgChan和backendMsgChan 两个 channel，
 			// 实际上这两个 channel 即为 client 所订阅的 channel的两个消息队列
 			memoryMsgChan = subChannel.memoryMsgChan
 			backendMsgChan = subChannel.backend.ReadChan()
-			flusherChan = nil // 同时，禁止从 flusherChan 取消息，因为才刚刚准备好从channel取消息，此时不需要刷新缓冲区
-		} else {
-			// we're buffered (if there isn't any more data we should flush)...
-			// select on the flusher ticker channel, too
+			flusherChan = nil //刷新过一次后，此处不需要再刷新，进入下一轮从chnanel中取数据，有数据的话，下一个分支中的flusherChan又会被置上
+		} else { //只有从内存或者磁盘中收到消息时，才会进入到此分支（因为flushed被置为false）
 			// 在执行到此之前，subChannel肯定已经被设置过了，且已经从 memoryMsgChan 或 backendMsgChan 取出过消息
 			// 因此，可以准备刷新消息发送缓冲区了，即设置flusherChan
 			memoryMsgChan = subChannel.memoryMsgChan //messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
 			backendMsgChan = subChannel.backend.ReadChan()
-			flusherChan = outputBufferTicker.C
+			flusherChan = outputBufferTicker.C //开始接受消息时才打开这个flush的定时开关
 		}
 		//for循环中select的语法见youdao
 		select { // 这里负责执行Client 的各种事件
@@ -329,26 +322,26 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			// 因此此处就会收到一条消息，同样将 identifyEventChan 重置为nil，这表明只能从 identifyEventChan 通道中接收一次消息，因为在一次连接过程中，只允许客户端初始化一次。
 			// 在IDENTIFY命令处理请求中可看到在第一行时进行了检查，若此时客户端的状态不是 stateInit，则会报错。
 			// 最后，根据客户端设置的信息，更新部分属性，如心跳间隔 heartbeatTicker
-		case identifyData := <-identifyEventChan: //传递一些由客户端设置的一些参数，参数包括OutputBufferTimeout、HeartbeatInterval、SampleRate以及MsgTimeout，它们是在客户端发出IDENTIFY命令请求时，被压入到identifyEventChan管道的。
+		case identifyData := <-identifyEventChan://这玩意只在处理客户端的IDENTIFY命令的时候会进行操作。传递一些由客户端设置的一些参数，参数包括OutputBufferTimeout、HeartbeatInterval、SampleRate以及MsgTimeout，它们是在客户端发出IDENTIFY命令请求时，被压入到identifyEventChan管道的。
 			//其中OutputBufferTimeout用于构建flusherChan定时刷新发送给客户端的消息数据，
 			// 而HeartbeatInterval用于定时向客户端发送心跳消息，
-			// SampleRate则用于确定此次从channel中取出的消息，是否应该发送给此客户端	，
+			// SampleRate（采样率）则用于确定此次从channel中取出的消息，是否应该发送给此客户端	，
 			//最后的MsgTimeout则用于设置消息投递并被处理的超时时间，最后会被设置成message.pri作为消息先后发送顺序的依据
-			identifyEventChan = nil //IDENTIFY命令的时候会设置此identifyEventChan,表示you can't IDENTIFY anymore
+			identifyEventChan = nil //一个客户端在建立连接后只允许发送一次IDENTIFY命令，此处表示不再从identifyEventChan获取消息
 			//根据客户端设置的信息，更新部分属性
-			outputBufferTicker.Stop()
-			if identifyData.OutputBufferTimeout > 0 {
+			outputBufferTicker.Stop() //ticker中的stop函数会停止ticker数据产生，但是不会关闭ticker的channel
+			if identifyData.OutputBufferTimeout > 0 { //上面停止默认的outputBufferTicker下面开启新的outputBufferTicker
 				outputBufferTicker = time.NewTicker(identifyData.OutputBufferTimeout)
 			}
 
 			heartbeatTicker.Stop()
 			heartbeatChan = nil
-			if identifyData.HeartbeatInterval > 0 {
+			if identifyData.HeartbeatInterval > 0 {//上面停止默认的heartbeatTicker下面开启新的heartbeatTicker
 				heartbeatTicker = time.NewTicker(identifyData.HeartbeatInterval)
 				heartbeatChan = heartbeatTicker.C
 			}
 
-			if identifyData.SampleRate > 0 {
+			if identifyData.SampleRate > 0 { //同样，更新采样率
 				sampleRate = identifyData.SampleRate
 			}
 
@@ -857,7 +850,9 @@ func (p *protocolV2) CLS(client *clientV2, params [][]byte) ([]byte, error) {
 func (p *protocolV2) NOP(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, nil
 }
-
+//客户端发送消息的形式：
+//PUB <topic_name>\n
+//[ 4-byte size in bytes ][ N-byte binary data ]
 //这是用tcp的方式来PUB,但是和用http的方式大同小异，详情见http的doPUB
 func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 	var err error
@@ -893,6 +888,7 @@ func (p *protocolV2) PUB(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_MESSAGE", "PUB failed to read message body")
 	}
 	//client 是否有权限对这个 topic做PUB 操作
+	//客户端必须在 SUB, PUB 或 MPUB 命令前前发送 AUTH
 	if err := p.CheckAuth(client, "PUB", topicName, ""); err != nil {
 		return nil, err
 	}

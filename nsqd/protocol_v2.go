@@ -267,7 +267,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 
 	for {
 		//subChannel == nil即此客户端未订阅任何channel或者客户端还未准备好接收消息
-		if subChannel == nil || !client.IsReadyForMessages() { //subChannel == nil；没准备好也会进入此分支。
+		if subChannel == nil || !client.IsReadyForMessages() {
 			// the client is not ready to receive messages...
 			memoryMsgChan = nil //当客户端订阅的channel还未创建完毕时，或者没有准备好时，与该channel相关联的用于接收消息的内存消息队列和磁盘消息队列都会被置位空，进而不会接收到任何消息。
 			backendMsgChan = nil
@@ -279,17 +279,13 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			if err != nil {
 				goto exit //当for 和 select结合使用时，break语言是无法跳出for之外的，因此若要break出来，这里需要加一个标签，使用goto， 或者break 到具体的位置。
 			}
-			flushed = true
-		} else if flushed {//已经flush过了
-			// 表明上一个循环中，我们已经显式地刷新过，准确而言，应该上从client.SubEventChan中接收到了subChannelclient订阅某个 channel 导致的）
-			// 因此初始化memoryMsgChan和backendMsgChan 两个 channel，
-			// 实际上这两个 channel 即为 client 所订阅的 channel的两个消息队列
-			memoryMsgChan = subChannel.memoryMsgChan
+			flushed = true //准备好开始接收数据后，flushed只会在定时到后或有消息到后才被置上。
+		} else if flushed {//如果表明上一个循环中，已经flush过了
+			memoryMsgChan = subChannel.memoryMsgChan			// 这两个 channel 即为 client 所订阅的 channel的两个消息队列
 			backendMsgChan = subChannel.backend.ReadChan()
 			flusherChan = nil //刷新过一次后，此处不需要再刷新，进入下一轮从chnanel中取数据，有数据的话，下一个分支中的flusherChan又会被置上
 		} else { //只有从内存或者磁盘中收到消息时，才会进入到此分支（因为flushed被置为false）
-			// 在执行到此之前，subChannel肯定已经被设置过了，且已经从 memoryMsgChan 或 backendMsgChan 取出过消息
-			// 因此，可以准备刷新消息发送缓冲区了，即设置flusherChan
+			// 在执行到此之前，subChannel肯定已经被设置过了，且已经从 memoryMsgChan 或 backendMsgChan 取出过消息，因此，可以准备刷新消息发送缓冲区了，即设置flusherChan
 			memoryMsgChan = subChannel.memoryMsgChan //messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
 			backendMsgChan = subChannel.backend.ReadChan()
 			flusherChan = outputBufferTicker.C //开始接受消息时才打开这个flush的定时开关
@@ -301,9 +297,6 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 		//3.无缓冲的channel，没数据取和数据没被取的情况都会阻塞
 		//4.有缓冲的，没数据的时候才阻塞，写满的时候才阻塞，其他时候不阻塞。
 		case <-flusherChan: // 定时刷新消息发送缓冲区。
-			// if this case wins, we're either starved
-			// or we won the race between other channels...
-			// in either case, force flush
 			client.writeLock.Lock()
 			err = client.Flush()
 			client.writeLock.Unlock()

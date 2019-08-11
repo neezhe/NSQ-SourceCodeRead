@@ -267,7 +267,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 
 	for {
 		//subChannel == nil即此客户端未订阅任何channel或者客户端还未准备好接收消息
-		if subChannel == nil || !client.IsReadyForMessages() {
+		if subChannel == nil || !client.IsReadyForMessages() { //在消费者未发送RDY命令给服务端之前，服务端不会推送消息给客户端
 			// the client is not ready to receive messages...
 			memoryMsgChan = nil //当客户端订阅的channel还未创建完毕时，或者没有准备好时，与该channel相关联的用于接收消息的内存消息队列和磁盘消息队列都会被置位空，进而不会接收到任何消息。
 			backendMsgChan = nil

@@ -177,7 +177,11 @@ func (p *protocolV2) Send(client *clientV2, frameType int32, data []byte) error 
 
 	return err
 }
-
+//当连接到一个 nsqd 实例时，客户端库必须发送以下数据，顺序是：
+//魔术标识符(v2)
+//一个 IDENTIFY 命令 (和负载) 和读/验证响应
+//一个 SUB 命令 (指定需要的话题（topic)) 和读/验证响应
+//一个初始化 RDY 值 1
 func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 	if bytes.Equal(params[0], []byte("IDENTIFY")) { //这个命令不需要做认证。按照客户端的调用逻辑，是建立连接成功后，马上发送一个MagicV1的消息不等返回就马上发送"IDENTIFY"命令（表明客户端的身份信息），并接受其返回值。
 		return p.IDENTIFY(client, params) //更新服务器上的客户端元数据和协商功能。服务器会根据客户端请求的内容返回“ok”或一个JSON数据，注意：客户端发送了 feature_negotiation (并且服务端支持)，响应体将会是 JSON

@@ -40,7 +40,6 @@ func (p *program) Init(env svc.Environment) error {
 //start返回后会进入到svc的代码里面进行等待监听信号量，如果用户杀进程，就调用下面的stop
 func (p *program) Start() error {
 	opts := nsqd.NewOptions() // 1. 通过程序默认的参数构建 options 实例
-
 	flagSet := nsqdFlagSet(opts)// 2. 将 opts 结合命令行参数集进行进一步初始化
 	flagSet.Parse(os.Args[1:]) //因为用到了NewFlagSet,所以此处就需要指定Parse的参数，如果用的是默认Flag,则其参数无需指定
 

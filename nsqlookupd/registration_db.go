@@ -69,19 +69,15 @@ func NewRegistrationDB() *RegistrationDB {
 		registrationMap: make(map[Registration]ProducerMap), //make一个
 	}
 }
-//上面定义了注册表结构后，如何管理注册表，进行topic和channel的增删呢。
-// 本质上使用的就是map的增、删、查操作, 无非是先构建Registration类型的key, 根据key去操作。
-// 因为这个注册表可能多个操作同时在并行执行，为了保住线程安全，每个涉及到RegistrationDB.registrationMap的增、删、查操作都利用了RegistrationDB定义的读写锁进行加锁，
-// add a registration key
-//添加一个registration的key，只设置了map的key，value是一个空的Producers列表，后续添加Producer的工作则交给了AddProducer方法。
-//这个参数key是怎么产生的？例如创建一个“aa”的topic,那么产生的key就为 Registration{"topic", “aa”, ""}
+//管理RegistrationDB，本质上使用的就是map的增、删、查操作, 无非是先构建Registration类型的key, 根据key去操作。
+// 因为可能多个操作同时在并行执行，为了保住线程安全，每个涉及到RegistrationDB.registrationMap的增、删、查操作都利用了RegistrationDB定义的读写锁进行加锁，
 func (r *RegistrationDB) AddRegistration(k Registration) { //创建Topic和Chnnel是通过Http请求接口完成。通过http创建一个topic或channel.
 	//写锁
 	r.Lock()
 	defer r.Unlock()
-	_, ok := r.registrationMap[k] //是否已经创建了
+	_, ok := r.registrationMap[k] //Registration是否已经在registrationMap
 	if !ok {
-		r.registrationMap[k] = make(map[string]*Producer)
+		r.registrationMap[k] = make(map[string]*Producer)//只设置了registrationMap的key，value是一个空的Producers列表，后续添加Producer的工作则交给了AddProducer方法
 	}
 }
 //通过http调用AddRegistration完成注册topic或channel后，下面tcp通过AddProducer来添加producer,负责将Producer添加到注册表中key对应的producers列表中
@@ -91,13 +87,13 @@ func (r *RegistrationDB) AddProducer(k Registration, p *Producer) bool {
 	r.Lock()
 	defer r.Unlock()
 	_, ok := r.registrationMap[k]
-	if !ok {
+	if !ok { //就算没有这个Registration在registrationMap没有value，我此处要要给这个key创建一个空的value
 		r.registrationMap[k] = make(map[string]*Producer)
 	}
-	producers := r.registrationMap[k]
+	producers := r.registrationMap[k] //返回值是一个ProducerMap类型
 	//看这个producer是否已存在
 	_, found := producers[p.peerInfo.id]
-	if found == false {
+	if found == false { //无论这个Registration在registrationMap确实没有value，此处就把这个p给他当value
 		//producer不存在时，则添加
 		producers[p.peerInfo.id] = p
 	}
@@ -145,16 +141,14 @@ func (r *RegistrationDB) needFilter(key string, subkey string) bool {
 func (r *RegistrationDB) FindRegistrations(category string, key string, subkey string) Registrations {
 	r.RLock()
 	defer r.RUnlock()
-	//返回指定的category key subkey对应的registration
-	//如果key和subkey使用通配符*查找，则返回该条件下的所有数据
-	if !r.needFilter(key, subkey) {
+	if !r.needFilter(key, subkey) { //此处如果没有*通配符，则唯一查找
 		k := Registration{category, key, subkey}
-		if _, ok := r.registrationMap[k]; ok {
-			//返回指定的Registrations
-			return Registrations{k}
+		if _, ok := r.registrationMap[k]; ok { //因为所有的Registration都唯一的存在registrationMap中，所以此处这样判断其是否存在
+			return Registrations{k}//数组，所以要用大括号
 		}
 		return Registrations{}
 	}
+	//若查找条件里面有通配符*,比如，若key为*,则找出key所有的值。
 	results := Registrations{}
 	for k := range r.registrationMap {
 		//不符合，则跳过当前循环，继续下一个循环

@@ -10,7 +10,7 @@ import (
 	"github.com/nsqio/nsq/internal/http_api"
 	"github.com/nsqio/nsq/internal/protocol"
 	"github.com/nsqio/nsq/internal/version"
-)
+	)
 
 type httpServer struct {
 	ctx    *Context   //用于传递nsqlookupd地址
@@ -126,7 +126,8 @@ func (s *httpServer) doLookup(w http.ResponseWriter, req *http.Request, ps httpr
 	if err != nil {
 		return nil, http_api.Err{400, "MISSING_ARG_TOPIC"}
 	}
-	// 1. 根据Topic，看看是否已经注册了。如果没有注册抛出异常
+	fmt.Println("=====doLookup======")
+	// 1. 根据Topic名称，看看是否已经注册了。如果没有注册抛出异常
 	registration := s.ctx.nsqlookupd.DB.FindRegistrations("topic", topicName, "")
 	if len(registration) == 0 {//topic不存在
 		return nil, http_api.Err{404, "TOPIC_NOT_FOUND"}
@@ -136,6 +137,7 @@ func (s *httpServer) doLookup(w http.ResponseWriter, req *http.Request, ps httpr
 	// 3. 获取该topic下的所有producers
 	producers := s.ctx.nsqlookupd.DB.FindProducers("topic", topicName, "")
 	//去掉不活跃的producer机器
+	fmt.Println("====================",producers)
 	producers = producers.FilterByActive(s.ctx.nsqlookupd.opts.InactiveProducerTimeout,
 		s.ctx.nsqlookupd.opts.TombstoneLifetime)
 	return map[string]interface{}{

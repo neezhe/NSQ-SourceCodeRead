@@ -25,7 +25,7 @@ func (p *LookupProtocolV1) IOLoop(conn net.Conn) error {
 	var err error
 	var line string
 
-	client := NewClientV1(conn)
+	client := NewClientV1(conn) //继承了conn
 	reader := bufio.NewReader(client)//将client封装成一个拥有size大小缓存的 bufio.Reader对象
 	for {//读取请求命令
 		line, err = reader.ReadString('\n')//持续的从tcp连接中读取数据包，直到遇到'\n'，也包括'\n'，功能同 ReadBytes，只不过返回的是字符串。内部有copy,ReadLine更快，没有copy.
@@ -139,7 +139,7 @@ func (p *LookupProtocolV1) REGISTER(client *ClientV1, reader *bufio.Reader, para
 	//如果有channel，需要单独记录一下channel，因为topic和channel可以1:n的
 	if channel != "" {
 		key := Registration{"channel", topic, channel}
-		//把channel和producer关联起来。
+		//把channel和producer关联起来。注意nsqd中的producer指的是nsqd
 		if p.ctx.nsqlookupd.DB.AddProducer(key, &Producer{peerInfo: client.peerInfo}) {
 			p.ctx.nsqlookupd.logf(LOG_INFO, "DB: client(%s) REGISTER category:%s key:%s subkey:%s",
 				client, "channel", topic, channel)
@@ -207,7 +207,7 @@ func (p *LookupProtocolV1) UNREGISTER(client *ClientV1, reader *bufio.Reader, pa
 	return []byte("OK"), nil
 }
 //客户端初始化后，先进行IDENTIFY操作，验证身份，初始化peerInfo
-//IDENTIFY操作在四个操作中最先执行，且只执行一次
+//IDENTIFY操作在四个操作中最先执行，且一个客户端只执行一次
 func (p *LookupProtocolV1) IDENTIFY(client *ClientV1, reader *bufio.Reader, params []string) ([]byte, error) {
 	var err error
 

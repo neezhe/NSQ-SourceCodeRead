@@ -32,7 +32,7 @@ func NewOptions() *Options {
 		LogLevel:         lg.INFO,
 		TCPAddress:       "0.0.0.0:4160",
 		HTTPAddress:      "0.0.0.0:4161",
-		BroadcastAddress: hostname,
+		BroadcastAddress: hostname, //为和lookup需要指定BroadcastAddress？
 
 		InactiveProducerTimeout: 300 * time.Second,
 		TombstoneLifetime:       45 * time.Second,

@@ -104,7 +104,7 @@ func NewOptions() *Options {
 		HTTPSAddress:     "0.0.0.0:4152",
 		BroadcastAddress: hostname,
 
-		NSQLookupdTCPAddresses: make([]string, 0), //这是什么用法？
+		NSQLookupdTCPAddresses: make([]string, 0), //[]string{"0.0.0.0:4161"},在此处设值没有用，只能通过命令行或者http设置下去。
 		AuthHTTPAddresses:      make([]string, 0),
 
 		HTTPClientConnectTimeout: 2 * time.Second,

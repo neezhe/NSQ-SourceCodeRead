@@ -100,7 +100,7 @@ func (lp *lookupPeer) Close() error {
 func (lp *lookupPeer) Command(cmd *nsq.Command) ([]byte, error) {
 	initialState := lp.state
 	if lp.state != stateConnected { // 1. 当连接尚未建立时，走这里
-		err := lp.Connect() // 2. 发起连接建立过程
+		err := lp.Connect() // 2. 发起向lookup的连接建立过程，并且把连接的conn存到lookupPeer
 		if err != nil {
 			return nil, err
 		}

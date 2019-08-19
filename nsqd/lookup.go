@@ -2,15 +2,13 @@ package nsqd
 
 import (
 	"bytes"
-	"encoding/json"
 	"net"
 	"os"
 	"strconv"
 	"time"
-
+	"encoding/json"
 	"github.com/nsqio/go-nsq"
 	"github.com/nsqio/nsq/internal/version"
-	"fmt"
 )
 
 //当连接建立成功后（不要忘记在这之前发送了一个MagicV1的消息），会执行下面这个回调函数。
@@ -39,7 +37,9 @@ func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 			n.logf(LOG_INFO, "LOOKUPD(%s): lookupd returned %s", lp, resp)
 			lp.Close()
 			return
+
 		} else { //解析并校验 IDENTIFY 请求的响应内容
+
 			err = json.Unmarshal(resp, &lp.Info)
 			if err != nil {
 				n.logf(LOG_ERROR, "LOOKUPD(%s): parsing response - %s", lp, resp)
@@ -69,7 +69,8 @@ func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 			topic.RUnlock()
 		}
 		n.RUnlock()
-		// 5. 最后，遍历 REGISTER 命令集合，依次执行它们，并忽略返回结果（当然肯定要检测请求是否执行成功）
+		// 5. 最后，遍历 REGISTER命令集合，依次执行它们，并忽略返回结果（当然肯定要检测请求是否执行成功）
+		//REGISTER命令可以用来给topic添加producer
 		for _, cmd := range commands {
 			n.logf(LOG_INFO, "LOOKUPD(%s): %s", lp, cmd)
 			_, err := lp.Command(cmd)
@@ -90,6 +91,7 @@ func (n *NSQD) lookupLoop() {
 	var lookupPeers []*lookupPeer // 已连接的lookupd服务实例
 	var lookupAddrs []string      // 已链接的lookupd服务地址
 	connect := true               //connect默认为true，会执行这段代码，连接到nsqlookupd服务，执行IDENTIFY操作。然后将connect设为false，避免再次执行。
+
 	//添加或减少nsqlookupd服务时，会对已连接的nsqlookupd进行过滤（主要针对减少nsqlookupd服务），然后将connect设置为true，再次执行上面的连接操作。
 	hostname, err := os.Hostname()
 	if err != nil {
@@ -98,15 +100,15 @@ func (n *NSQD) lookupLoop() {
 	}
 	////0.0.0.0：这个IP地址在IP数据报中只能用作源IP地址，这发生在当设备启动时但又不知道自己的IP地址情况下。
 	//如果一个主机有两个IP地址，192.168.1.1 和 10.1.2.1，并且该主机上的一个服务监听的地址是0.0.0.0,那么通过两个ip地址都能够访问该服务
-	n.getOpts().NSQLookupdTCPAddresses = []string{"127.0.0.1:4160"}
-	fmt.Println("========begin lookupLoop=================", n.getOpts().NSQLookupdTCPAddresses)
+	//n.getOpts().NSQLookupdTCPAddresses = []string{"127.0.0.1:4160"}
+	//fmt.Println("========begin lookupLoop=================", n.getOpts().NSQLookupdTCPAddresses)
+
 	// for announcements, lookupd determines the host automatically
 	ticker := time.Tick(15 * time.Second)
 	for {
 		// 1. 在 nsqd 刚创建时，先构造 nsqd 同各 nsqlookupd（从配置文件中读取）的 lookupPeer 连接，并执行一个回调函数
 		if connect { // 在 nsqd 启动时会进入到这里，即创建nsqd与各 nsqlookupd 的连接
 			for _, host := range n.getOpts().NSQLookupdTCPAddresses { // 配置文件中或命令中指定的nsqlookupd服务的地址nsqlookupd_tcp_addresses
-				fmt.Println("=======================", host)
 				if in(host, lookupAddrs) { // 如果已经连接过了，跳过
 					continue
 				}
@@ -114,6 +116,7 @@ func (n *NSQD) lookupLoop() {
 				lookupPeer := newLookupPeer(host, n.getOpts().MaxBodySize, n.logf,
 					connectCallback(n, hostname)) //建立对应的网络连接的抽象实体(lookupPeer实例)
 				lookupPeer.Command(nil)           // 开始建立与lookupd的交互，nil代表连接初始建立，没用实际命令请求
+
 				lookupPeers = append(lookupPeers, lookupPeer)
 				lookupAddrs = append(lookupAddrs, host) // 更新 nsqlookupd 的连接实体和地址
 			}
@@ -200,7 +203,6 @@ func in(s string, lst []string) bool {
 	}
 	return false
 }
-
 // nsqlookupd服务的HTTP地址
 func (n *NSQD) lookupdHTTPAddrs() []string {
 	var lookupHTTPAddrs []string

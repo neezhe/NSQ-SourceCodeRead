@@ -218,7 +218,7 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 	return nil, protocol.NewFatalClientErr(nil, "E_INVALID", fmt.Sprintf("invalid command %s", params[0]))
 }
 
-//nsqd 针对每一个 client 的订阅消息的处理循环
+//nsqd 针对每一个消费者的消息的处理循环
 //1. nsqd每个连接上来的客户端会创建一个protocolV2.messagePump协程负责订阅消息（这个协程也在IOLoop被开启），做超时处理；
 //2. 客户端发送SUB命令后，SUB()函数会通知客户端的messagePump协程去订阅这个channel的消息；
 //3. messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
@@ -300,7 +300,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 		//2.被初始化但是没有值的channel或者没有初始化或者被设为nil的channel，其case永远不会被进入，但是被close的channel,其被读的case是可以进入的，它没有被分配内存空间,相当于这个channel被select忽略。
 		//3.无缓冲的channel，没数据取和数据没被取的情况都会阻塞
 		//4.有缓冲的，没数据的时候才阻塞，写满的时候才阻塞，其他时候不阻塞。
-		case <-flusherChan: // 定时刷新消息发送缓冲区。
+		case <-flusherChan: // 消费者独有。定时刷新消息发送缓冲区。
 			client.writeLock.Lock()
 			err = client.Flush()
 			client.writeLock.Unlock()
@@ -309,8 +309,8 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			}
 			flushed = true
 			// 客户端处理消息的能力发生了变化会触发此处解除阻塞，比如客户端刚消费了某个消息
-		case <-client.ReadyStateChan: //这个case下面没有什么要处理的，目的就是解除阻塞，进行下一轮for循环重新执行一下上面的if语句。
-		case subChannel = <-subEventChan: //subChannel在下面被用到，subChannel就是订阅Chnanel,Client需要发送一个SUB请求来订阅Channel
+		case <-client.ReadyStateChan: //消费者独有。这个case下面没有什么要处理的，目的就是解除阻塞，进行下一轮for循环重新执行一下上面的if语句。
+		case subChannel = <-subEventChan: //消费者独有。subChannel在下面被用到，subChannel就是订阅Chnanel,Client需要发送一个SUB请求来订阅Channel
 			// 将 subEventChan 重置为nil，原因表示之后不能从此通道中接收到消息
 			// 而置为nil的原因是，在SUB命令请求方法中第一行即为检查此客户端是否处于 stateInit 状态，
 			// 而调用 SUB 了之后，状态变为 stateSubscribed
@@ -319,7 +319,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			// 因此此处就会收到一条消息，同样将 identifyEventChan 重置为nil，这表明只能从 identifyEventChan 通道中接收一次消息，因为在一次连接过程中，只允许客户端初始化一次。
 			// 在IDENTIFY命令处理请求中可看到在第一行时进行了检查，若此时客户端的状态不是 stateInit，则会报错。
 			// 最后，根据客户端设置的信息，更新部分属性，如心跳间隔 heartbeatTicker
-		case identifyData := <-identifyEventChan://这玩意只在处理客户端的IDENTIFY命令的时候会进行操作。传递一些由客户端设置的一些参数，参数包括OutputBufferTimeout、HeartbeatInterval、SampleRate以及MsgTimeout，它们是在客户端发出IDENTIFY命令请求时，被压入到identifyEventChan管道的。
+		case identifyData := <-identifyEventChan://消费者生产者共有。这玩意只在处理客户端的IDENTIFY命令的时候会进行操作。传递一些由客户端设置的一些参数，参数包括OutputBufferTimeout、HeartbeatInterval、SampleRate以及MsgTimeout，它们是在客户端发出IDENTIFY命令请求时，被压入到identifyEventChan管道的。
 			//其中OutputBufferTimeout用于构建flusherChan定时刷新发送给客户端的消息数据，
 			// 而HeartbeatInterval用于定时向客户端发送心跳消息，
 			// SampleRate（采样率）则用于确定此次从channel中取出的消息，是否应该发送给此客户端	，
@@ -343,14 +343,14 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			}
 
 			msgTimeout = identifyData.MsgTimeout
-		case <-heartbeatChan: //由于有定时器在，所以此for循环不会出现all goroutine are asleep的错误。
+		case <-heartbeatChan: //消费者生产者共有。由于有定时器在，所以此for循环不会出现all goroutine are asleep的错误。
 			//定时向客户端发送心跳消息，由HeartbeatInterval确定
 			err = p.Send(client, frameTypeResponse, heartbeatBytes)
 			if err != nil {
 				goto exit
 			}
 			//开始订阅管道subChannel.memoryMsgChan/backend， 每个客户端都可以订阅到channel的内存或者磁盘队列里面;
-		case b := <-backendMsgChan: //关键。当从此通道中收到消息时，表明有channel实例有消息需要发送给此客户端。
+		case b := <-backendMsgChan: //消费者独有。关键。当从此通道中收到消息时，表明有channel实例有消息需要发送给此客户端。
 			// 根据 client 在与 nsqd 建立连接后，第一次 client 会向 nsqd 发送 IDENFITY 请求,用来为 nsqd 提供 client 自身的信息，即为 identifyData，而 sampleRate 就包含在其中。
 			// 换言之，客户端会发送一个 0-100 的数字给 nsqd，在 nsqd 服务端，它通过从 0-100 之间随机生成一个数字，
 			// 若其大于 客户端发送过来的数字 sampleRate，则 client 虽然订阅了此 channel，且此 channel中也有消息了，但是不会发送给此 client。
@@ -376,7 +376,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 				goto exit
 			}
 			flushed = false
-		case msg := <-memoryMsgChan: // 9. 从 memoryMsgChan 队列中收到了消息
+		case msg := <-memoryMsgChan: //消费者独有 9. 从 memoryMsgChan 队列中收到了消息
 			if sampleRate > 0 && rand.Int31n(100) > sampleRate {
 				continue
 			}
@@ -390,7 +390,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 				goto exit
 			}
 			flushed = false
-		case <-client.ExitChan: //当客户端退出时，则对应的处理循环也需要退出。
+		case <-client.ExitChan: //消费者生产者共有。当客户端退出时，则对应的处理循环也需要退出。
 			goto exit
 		}
 	}

@@ -85,7 +85,7 @@ func (c *ClusterInfo) GetLookupdTopics(lookupdHTTPAddrs []string) ([]string, err
 		go func(addr string) {
 			defer wg.Done()
 
-			endpoint := fmt.Sprintf("http://%s/topics", addr)
+			endpoint := fmt.Sprintf("http://%s/topics", addr) //查询nsqloookupd中的topics
 			c.logf("CI: querying nsqlookupd %s", endpoint)
 
 			var resp respType
@@ -108,7 +108,7 @@ func (c *ClusterInfo) GetLookupdTopics(lookupdHTTPAddrs []string) ([]string, err
 		return nil, fmt.Errorf("Failed to query any nsqlookupd: %s", ErrList(errs))
 	}
 
-	topics = stringy.Uniq(topics)
+	topics = stringy.Uniq(topics) //此处是数组去重
 	sort.Strings(topics)
 
 	if len(errs) > 0 {

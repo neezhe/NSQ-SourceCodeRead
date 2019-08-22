@@ -217,7 +217,7 @@ func (s *httpServer) topicsHandler(w http.ResponseWriter, req *http.Request, ps 
 	}
 
 	inactive, _ := reqParams.Get("inactive")
-	if inactive == "true" {
+	if inactive == "true" { //对于浏览器网页请求，不会进入到此if语句。
 		topicChannelMap := make(map[string][]string)
 		if len(s.ctx.nsqadmin.getOpts().NSQLookupdHTTPAddresses) == 0 {
 			goto respond

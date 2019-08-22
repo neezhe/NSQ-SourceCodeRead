@@ -504,7 +504,7 @@ func (n *NSQD) GetTopic(topicName string) *Topic {
 
 	// if loading metadata at startup, no lookupd connections yet, topic started after load
 	//“原子的”这个形容词就意味着，在这里读取value的值的同时，当前计算机中的任何CPU都不会进行其它的针对此值的读或写操作。这样的约束是受到底层硬件的支持的。
-	if atomic.LoadInt32(&n.isLoading) == 1 { //若正处在启动过程，刚启动的时候LoadMetadata函数会
+	if atomic.LoadInt32(&n.isLoading) == 1 { //若nsqd正处在启动过程，刚启动的时候LoadMetadata函数会加载
 		return t //当正在加载元数据的时候，还没有lookupd连接，所以没法通知lookupd，topic必须在元数据加载完后才行
 	}
 

@@ -286,10 +286,10 @@ func (t *Topic) messagePump() { //此函数只在NewTopic的时候被调用。
 			continue
 		case <-t.exitChan:
 			goto exit
-		//上面的几个chan无法进入下面的数据处理，发现只有这个chan中有数据的话才能跳出此循环，也就是只有当调用了GetTopic中最后的Start函数才行。
+		//上面的几个chan无法进入下面的数据处理，发现只有这startChan中有数据的话才能跳出此循环，也就是只有当调用了GetTopic中最后的Start函数才行。
 		// 但是这个Topic的messagePump函数也是只能由GetTopic的中间创建，也就是说此messagePump先被创建然后阻塞在此处，等GetTopic结束时跳出此for循环。
 		//但注意此GetTopic有3条路经会被调用。
-		case <-t.startChan: //比如当pub一个消息后（比如curl -d 'hello world 1' 'http://127.0.0.1:4151/pub?topic=test'），在gettopic中初始化完topic后，会通知此处的startChan
+		case <-t.startChan: //只有GetTopic中初始化完topic后会通知此处,pub中有用到,比如当pub一个消息后（比如curl -d 'hello world 1' 'http://127.0.0.1:4151/pub?topic=test'）
 			//下面就开始从Memory chan或者disk读取消息
 		}
 		break

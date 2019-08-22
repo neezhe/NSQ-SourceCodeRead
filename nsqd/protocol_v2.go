@@ -727,7 +727,7 @@ func (p *protocolV2) RDY(client *clientV2, params [][]byte) ([]byte, error) {
 		return nil, nil
 	}
 
-	if state != stateSubscribed {
+	if state != stateSubscribed { //由此可见，RDY命令只用在消费者和nsqd之间。
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot RDY in current state")
 	}
 
@@ -759,7 +759,7 @@ func (p *protocolV2) RDY(client *clientV2, params [][]byte) ([]byte, error) {
 // 消费者 client 收到消息后，会向 nsqd　响应　FIN+msgID　通知服务器成功投递消息，可以清空消息了
 func (p *protocolV2) FIN(client *clientV2, params [][]byte) ([]byte, error) {
 	state := atomic.LoadInt32(&client.State)
-	if state != stateSubscribed && state != stateClosing {
+	if state != stateSubscribed && state != stateClosing { //只有消费者才会发这个命令？
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "cannot FIN in current state")
 	}
 

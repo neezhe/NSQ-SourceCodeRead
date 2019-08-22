@@ -102,7 +102,6 @@ func (n *NSQD) lookupLoop() {
 	//如果一个主机有两个IP地址，192.168.1.1 和 10.1.2.1，并且该主机上的一个服务监听的地址是0.0.0.0,那么通过两个ip地址都能够访问该服务
 	//n.getOpts().NSQLookupdTCPAddresses = []string{"127.0.0.1:4160"}
 	//fmt.Println("========begin lookupLoop=================", n.getOpts().NSQLookupdTCPAddresses)
-
 	// for announcements, lookupd determines the host automatically
 	ticker := time.Tick(15 * time.Second)
 	for {

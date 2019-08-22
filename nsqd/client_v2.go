@@ -50,7 +50,7 @@ type identifyEvent struct {
 type clientV2 struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
 	//两个变量来判断客户端是否准备好接收消息
-	ReadyCount    int64 //ReadyCount变量就是我们所说的RDY计数，用于表示当前客户端能够接收的消息数量。
+	ReadyCount    int64 //ReadyCount变量就是我们所说的RDY计数，用于表示当前客户端能够接收的消息数量，直接由消费者设置下来。
 	InFlightCount int64	//InFlightCount，该变量表示当前仍在“飞行中”即仍在发送过程中或是客户端处理过程中的消息数量
 	MessageCount  uint64
 	FinishCount   uint64
@@ -319,7 +319,7 @@ func (c *clientV2) IsReadyForMessages() bool {
 		return false
 	}
 
-	readyCount := atomic.LoadInt64(&c.ReadyCount)
+	readyCount := atomic.LoadInt64(&c.ReadyCount) //
 	inFlightCount := atomic.LoadInt64(&c.InFlightCount)
 
 	c.ctx.nsqd.logf(LOG_DEBUG, "[%s] state rdy: %4d inflt: %4d", c, readyCount, inFlightCount)
@@ -360,7 +360,7 @@ func (c *clientV2) Empty() {
 }
 
 func (c *clientV2) SendingMessage() {
-	atomic.AddInt64(&c.InFlightCount, 1)
+	atomic.AddInt64(&c.InFlightCount, 1) //一发送就加1,确认对方接收到消息后（即收到FIN命令），这个变量才会减1，见351行。
 	atomic.AddUint64(&c.MessageCount, 1)
 }
 

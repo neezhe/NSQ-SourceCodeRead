@@ -297,8 +297,8 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 		//for循环中select的语法见youdao
 		select { // 这里负责执行Client 的各种事件
 		//语法：1.关闭channel后，可以继续向channel接收数据（接收的为该类型的0值，可解除阻塞），但是无法向其写入数据。
-		//2.被初始化但是没有值的channel或者没有初始化或者被设为nil的channel，其case永远不会被进入，但是被close的channel,其被读的case是可以进入的，它没有被分配内存空间,相当于这个channel被select忽略。
-		//3.无缓冲的channel，没数据取和数据没被取的情况都会阻塞
+		//2.被初始化但是没有值的channel或者没有初始化或者被设为nil的channel，其case永远不会被进入，它没有被分配内存空间,相当于这个channel被select忽略。
+		//3.无缓冲的channel，"没数据取"和"数据没被取走的情况下写"都会阻塞
 		//4.有缓冲的，没数据的时候才阻塞，写满的时候才阻塞，其他时候不阻塞。
 		case <-flusherChan: // 消费者独有。定时刷新消息发送缓冲区。
 			client.writeLock.Lock()

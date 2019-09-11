@@ -49,6 +49,7 @@ var (
 )
 
 func init() {
+	fmt.Println("zzzzzzzzzzz")
 	//自定义类型，绑定到flag，需要实现 flag.Value接口，也就是string(),set()两个接口。若要获取这个自定义的变量的值的话还需要实现get接口,那就成了flag.Getter类型。
 	flag.Var(&nsqdTCPAddrs, "nsqd-tcp-address", "nsqd TCP address (may be given multiple times)")
 	flag.Var(&destNsqdTCPAddrs, "destination-nsqd-tcp-address", "destination nsqd TCP address (may be given multiple times)")
@@ -240,11 +241,11 @@ func (ph *PublishHandler) HandleMessage(m *nsq.Message, destinationTopic string)
 		addr := ph.addresses[idx]
 		p := ph.producers[addr]
 		// 使用atomic原子操作, 自增 然后进行取模运算 轮询选取producer, 发布异步消息在ph.respChan进行通知
-		err = p.PublishAsync(destinationTopic, msgBody, ph.respChan, m, startTime, addr)
+		err = p.PublishAsync(destinationTopic, msgBody, ph.respChan, m, startTime, addr) //生产者开始发送消息
 	case ModeHostPool: // 在主机池里面根据算法获取生产者,然后发送异步消息
 		hostPoolResponse := ph.hostPool.Get()
 		p := ph.producers[hostPoolResponse.Host()]
-		err = p.PublishAsync(destinationTopic, msgBody, ph.respChan, m, startTime, hostPoolResponse)
+		err = p.PublishAsync(destinationTopic, msgBody, ph.respChan, m, startTime, hostPoolResponse)//生产者开始发送消息
 		if err != nil {
 			hostPoolResponse.Mark(err)
 		}
@@ -278,7 +279,7 @@ func main() {
 	flag.Var(&nsq.ConfigFlag{pCfg}, "producer-opt", "option to passthrough to nsq.Producer (may be given multiple times, see http://godoc.org/github.com/nsqio/go-nsq#Config)")
 
 	flag.Parse()
-
+	fmt.Println("===================")
 	if *showVersion {
 		fmt.Printf("nsq_to_nsq v%s\n", version.Binary)
 		return
@@ -381,7 +382,7 @@ func main() {
 			publishHandler:   publisher,
 			destinationTopic: publishTopic,
 		}
-		consumer.AddConcurrentHandlers(topicHandler, len(destNsqdTCPAddrs))
+		consumer.AddConcurrentHandlers(topicHandler, len(destNsqdTCPAddrs)) //生产者竟然在这里开始发消息，发消息的函数为(t *TopicHandler) HandleMessage
 	}
 	for i := 0; i < len(destNsqdTCPAddrs); i++ { //  根据生产者个数去开启len个goroutine去异步处理发送结果以及统计
 		go publisher.responder()

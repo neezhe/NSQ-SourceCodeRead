@@ -23,33 +23,33 @@ func (s Uint64Slice) Swap(i, j int) {
 func (s Uint64Slice) Less(i, j int) bool {
 	return s[i] < s[j]
 }
-
+//通过UDP来定期推送数据(消息的统计, 内存消耗等)给statsd_address(配置的地址),可以使用Graphite+Grafana搭建更强大的监控
 func (n *NSQD) statsdLoop() {
 	var lastMemStats memStats
 	var lastStats []TopicStats
-	interval := n.getOpts().StatsdInterval
+	interval := n.getOpts().StatsdInterval // 60s定时器
 	ticker := time.NewTicker(interval)
 	for {
 		select {
 		case <-n.exitChan:
 			goto exit
-		case <-ticker.C:
-			addr := n.getOpts().StatsdAddress
+		case <-ticker.C: //每隔60s,就统计一次并推送给指定addr。
+			addr := n.getOpts().StatsdAddress // 获取推送地址和前缀
 			prefix := n.getOpts().StatsdPrefix
-			conn, err := net.DialTimeout("udp", addr, time.Second)
+			conn, err := net.DialTimeout("udp", addr, time.Second) //注意此处采用udp的方式推送,如果此处的add没有配置正确，那么将会有err产生。
 			if err != nil {
 				n.logf(LOG_ERROR, "failed to create UDP socket to statsd(%s)", addr)
 				continue
 			}
 			sw := writers.NewSpreadWriter(conn, interval-time.Second, n.exitChan)
-			bw := writers.NewBoundaryBufferedWriter(sw, n.getOpts().StatsdUDPPacketSize)
+			bw := writers.NewBoundaryBufferedWriter(sw, n.getOpts().StatsdUDPPacketSize)  // StatsdUDPPacketSize: 508
 			client := statsd.NewClient(bw, prefix)
 
 			n.logf(LOG_INFO, "STATSD: pushing stats to %s", addr)
 
-			stats := n.GetStats("", "", false)
+			stats := n.GetStats("", "", false) // 获取所有的topics stats
 			for _, topic := range stats {
-				// try to find the topic in the last collection
+				// 找到最后一次连接时的topic
 				lastTopic := TopicStats{}
 				for _, checkTopic := range lastStats {
 					if topic.TopicName == checkTopic.TopicName {
@@ -73,14 +73,12 @@ func (n *NSQD) statsdLoop() {
 
 				for _, item := range topic.E2eProcessingLatency.Percentiles {
 					stat = fmt.Sprintf("topic.%s.e2e_processing_latency_%.0f", topic.TopicName, item["quantile"]*100.0)
-					// We can cast the value to int64 since a value of 1 is the
-					// minimum resolution we will have, so there is no loss of
-					// accuracy
+					//我们可以将该值转换为int64，因为值1是我们将拥有的最小分辨率，所以不存在精度损失
 					client.Gauge(stat, int64(item["value"]))
 				}
 
-				for _, channel := range topic.Channels {
-					// try to find the channel in the last collection
+				for _, channel := range topic.Channels {  // channel 统计信息
+					// 找到最后一次连接时的channel
 					lastChannel := ChannelStats{}
 					for _, checkChannel := range lastTopic.Channels {
 						if channel.ChannelName == checkChannel.ChannelName {
@@ -123,7 +121,7 @@ func (n *NSQD) statsdLoop() {
 			}
 			lastStats = stats
 
-			if n.getOpts().StatsdMemStats {
+			if n.getOpts().StatsdMemStats { // 内存统计信息
 				ms := getMemStats()
 
 				client.Gauge("mem.heap_objects", int64(ms.HeapObjects))

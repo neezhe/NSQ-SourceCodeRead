@@ -281,7 +281,7 @@ func (n *NSQD) Main() error {
 	n.waitGroup.Wrap(n.queueScanLoop) //用于进行msg重试，作用对象是inflight队列和deferred队列。保证消息“至少投递一次” 是由这个goroutine中的queueScanWorker不断的扫描 InFlightQueue 实现的。
 	//in-flight和deffered queue的。在具体的算法上的话参考了redis的随机过期算法。
 	n.waitGroup.Wrap(n.lookupLoop) //处理与nsqlookupd进程的交互。和lookupd建立长连接，每隔15s ping一下lookupd，新增或者删除topic的时候通知到lookupd，新增或者删除channel的时候通知到lookupd，动态的更新options
-	if n.getOpts().StatsdAddress != "" { //如果配置了状态统计服务进程地址
+	if n.getOpts().StatsdAddress != "" { //如果配置了获取nsqd状态统计的接收地址，才会打开这个统计协程。
 		n.waitGroup.Wrap(n.statsdLoop) //还有状态统计处理 go routine
 	}
 
@@ -630,27 +630,23 @@ func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, c
 		idealPoolSize = n.getOpts().QueueScanWorkerPoolMax
 	}
 	// 2. 开启一个循环，直到理想的 pool size 同实际的 pool size 相同才退出。
-	// 否则，若理想值更大，则需扩展已有的 queueScanWorker 的数量，
-	// 即在一个单独的 goroutine 中调用一次 nsqd.queueScanWorker 方法（开启了一个循环）。
-	// 反之， 需要减少已有的 queueScanWorker 的数量，
-	// 即往 closeCh 中 push 一条消息，强制 queueScanWorker goroutine 退出
+	// 否则，若理想值更大，则需扩展已有的 queueScanWorker 的数量，即在一个单独的 goroutine 中调用一次 nsqd.queueScanWorker 方法（开启了一个循环）。
+	// 反之， 需要减少已有的 queueScanWorker 的数量， 即往 closeCh 中 push 一条消息，强制 queueScanWorker goroutine 退出
 	for {
-
-
-
+		//最开始poolSize是为0的，后面调整poolSize使其值等于idealPoolSize
 		if idealPoolSize == n.poolSize {// 当前启动的worker数等于设定的idealPoolSize，不需要任何的增加或减少，那么直接返回，
 			break
-		} else if idealPoolSize < n.poolSize {// 如果大于了idealPoolSize，通过closeCh关闭一个worker
+		} else if idealPoolSize < n.poolSize {// 最开始是不会进入的此if的，因为poolSize为0。如果大于了idealPoolSize，通过closeCh关闭一个worker
 			// queueScanWorker 多了, 减少一个
 			// 利用 chan 的特性, 向closeCh 推一个消息, 这样 所有的 worCh 就会随机有一个收到这个消息（这是go chan本身的语言特性）, 然后关闭
 			// 细节: 这里跟 exitCh 的用法不同, exitCh 是要告知 "所有的" looper 退出, 所以使用的是 close(exitCh) 的用法
 			// 而如果想 让其中 一个 退出, 则使用 exitCh <- 1 的用法
-			closeCh <- 1
+			closeCh <- 1 //此处关的是下面if中的协程
 			n.poolSize--
 		} else {// 如果未达到idealPoolSize，启动worker的goroutine
 			// queueScanWorker 少了, 增加一个
 			n.waitGroup.Wrap(func() {
-				n.queueScanWorker(workCh, responseCh, closeCh) //worker的具体实现是queueScanWorker
+				n.queueScanWorker(workCh, responseCh, closeCh) //开一个死循环的ScanWorker协程
 			})
 			n.poolSize++
 		}
@@ -709,7 +705,7 @@ func (n *NSQD) queueScanWorker(workCh chan *Channel, responseCh chan bool, close
 //
 // If QueueScanDirtyPercent (default: 25%) of the selected channels were dirty,
 // the loop continues without sleep.
-// 此函数用于处理正在发送的 in-flight 消息以及被延迟处理的 deferred 消息
+// 此函数通过动态的调整queueScanWorker的数目来处理in-flight和deffered queue消息
 // 它管理了一个 queueScanWork pool，其默认数量为5。queueScanWorker 可以并发地处理 channel。
 // 它借鉴了Redis随机化超时的策略，即它每 QueueScanInterval 时间（默认100ms）就从本地的缓存队列中
 // 随机选择 QueueScanSelectionCount 个（默认20个） channels。其中 缓存队列每间隔  QueueScanRefreshInterval 还会被刷新。
@@ -723,7 +719,7 @@ func (n *NSQD) queueScanLoop() {
 	refreshTicker := time.NewTicker(n.getOpts().QueueScanRefreshInterval) //refreshTicker每过QueueScanRefreshInterval时间（默认5s）就调整queueScanWorker pool的大小。之后，queueScanLoop的任务是处理发送中的消息队列(in-flight queue)，以及被延迟发送的消息队列(deferred queue)两个优先级消息队列中的消息。
 	// 2. 获取 nsqd 所包含的 channel 集合，一个 topic 包含多个 channel，而一个 nsqd 实例可包含多个 topic 实例
 	channels := n.channels()
-	n.resizePool(len(channels), workCh, responseCh, closeCh) // 调整worker，调整队列扫描任务的worker的数量
+	n.resizePool(len(channels), workCh, responseCh, closeCh) // 这里应该叫 resizeWorkerPool，调整worker，调整队列扫描任务的worker的数量
 	// 3. 这个循环中的逻辑就是依据配置参数，反复处理 nsqd 所维护的 topic 集合所关联的 channel 中的消息
 	// 即循环处理将 channel 从 topic 接收到的消息，发送给订阅了对应的 channel 的客户端
 	for {
@@ -753,8 +749,8 @@ func (n *NSQD) queueScanLoop() {
 		// 然后立即处理 in-flight queue 和 deferred queue 中的消息。
 		// 注意，因为这里是随机抽取 channel 因此，有可能被选中的 channel 中并没有消息
 	loop:
-		for _, i := range util.UniqRands(num, len(channels)) { // 随机取出num个channel, 派发给 worker 进行 扫描
-			workCh <- channels[i]
+		for _, i := range util.UniqRands(num, len(channels)) { //从0~ len(channels)随机取出num个数。随机取出num个channel, 派发给 worker 进行 扫描
+			workCh <- channels[i] //此处是怎么保证随机性的？关键就在于n.channels()中在获取channel数组的时候，用的是遍历map，map的特点是遍历拿到的是随机的，数组中各channel是随机排列的。此处若UniqRands的两个参数是固定值，则每次拿到的i也会是固定值，但并不影响channels[i]是随机的。
 		}
 		// 接收 扫描结果, 统计有多少channel是"脏"的
 		// 3.5 统计 dirty 的 channel 的数量， responseCh管道在上面的 nsqd.resizePool方法中
@@ -763,12 +759,11 @@ func (n *NSQD) queueScanLoop() {
 		// 即查看 inFlightPQ 和 deferredPQ。
 		numDirty := 0
 		for i := 0; i < num; i++ {
-			if <-responseCh {
+			if <-responseCh { //若为true,则是dirty的
 				numDirty++
 			}
 		}
-		// 假如 "脏" 的 "比例" 大于配置的 QueueScanDirtyPercent（默认为25%）, 则不等待 workTicker
-		// 马上进行下一轮 扫描
+		// 假如 "dirty"的"比例"大于配置的QueueScanDirtyPercent(默认为25%）, 则不等待workTicker，马上进行下一轮扫描,目的就是减少需要处理inflight的channel
 		if float64(numDirty)/float64(num) > n.getOpts().QueueScanDirtyPercent {
 			goto loop
 		}

@@ -3,6 +3,7 @@ package nsqd
 type inFlightPqueue []*Message
 // 使用一个 heap 堆来存储所有的 message，根据 Message.pri（即消息处理时间的 deadline 时间戳）来组织成一个小顶堆，
 // 非线程安全，需要 caller 来保证线程安全
+//最小堆必须要实现的几个接口，push,pop,Remove等
 func newInFlightPqueue(capacity int) inFlightPqueue {
 	return make(inFlightPqueue, 0, capacity)
 }

@@ -476,10 +476,11 @@ func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout tim
 	msg.clientID = clientID
 	msg.deliveryTS = now
 	msg.pri = now.Add(timeout).UnixNano()//初始化消息的过期时间为timeout+now,pri是优先级的缩写，此处就是按照过期的优先级进行堆排序存放的。
-	err := c.pushInFlightMessage(msg)//此处入队，processInFlightQueue处出队。
+	err := c.pushInFlightMessage(msg)//放到缓存, 按msg.ID, 记录一下, 估计方便之后查找: c.inFlightMessages[msg.ID]
 	if err != nil {
 		return err
 	}
+	//这个msg消息已经通过msg.pri = now.Add(timeout).UnixNano()，加了一个超时时间，然后才被压入InFlightPQ
 	c.addToInFlightPQ(msg)//将msg加入到InFlight队列中，InFlight其实是一个堆排序队列，优先级是按照超时时间来排序的，越靠近过期时间，将会越靠前
 	return nil
 }
@@ -608,7 +609,8 @@ func (c *Channel) processDeferredQueue(t int64) bool {
 		if err != nil {
 			goto exit
 		}
-		//调用常规发送消息的put函数去照常投递消息
+		//调用常规发送消息的put函数去照常投递消息，那么在messagePump中又会把这个消息放到inflight队列中，这样就会导致消息无限循环发不出去？
+		//不会，当收到消费者的FIN命令后会将此消息彻底清掉，或者还有其他方法清掉。
 		c.put(msg)
 	}
 
@@ -624,13 +626,15 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 		return false
 	}
 
-	dirty := false
+	dirty := false //也就是说当一个连接的inflight队列中确实取出了要重发的消息，就表示这个连接是dirty的
 	for {
 		c.inFlightMutex.Lock()
+		// 如果 栈顶元素的优先级 小于参数
+		// 弹出 栈顶元素并返回
 		msg, _ := c.inFlightPQ.PeekAndShift(t) // 从队列中获取已经过期的消息
 		c.inFlightMutex.Unlock()
 
-		if msg == nil {//如果没有取到消息，那么就返回，仍然保持dirty := false
+		if msg == nil {//如果没有取到消息，即大于参数，那么就返回，仍然保持dirty := false
 			goto exit
 		}
 		dirty = true

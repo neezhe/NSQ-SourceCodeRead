@@ -49,6 +49,7 @@ var (
 )
 
 func init() {
+	//自定义类型，绑定到flag，需要实现 flag.Value接口，也就是string(),set()两个接口。若要获取这个自定义的变量的值的话还需要实现get接口,那就成了flag.Getter类型。
 	flag.Var(&nsqdTCPAddrs, "nsqd-tcp-address", "nsqd TCP address (may be given multiple times)")
 	flag.Var(&destNsqdTCPAddrs, "destination-nsqd-tcp-address", "destination nsqd TCP address (may be given multiple times)")
 	flag.Var(&lookupdHTTPAddrs, "lookupd-http-address", "lookupd HTTP address (may be given multiple times)")
@@ -78,7 +79,8 @@ type TopicHandler struct {
 	publishHandler   *PublishHandler
 	destinationTopic string
 }
-
+//responder() 是通过goroutine异步开启的, 主要是异步消息通知进行最终处理. 然后更新统计状态,
+// 可能发生的问题就是producer发送出现故障了,导致消息没正常发送出去,就重新入队列
 func (ph *PublishHandler) responder() {
 	var msg *nsq.Message
 	var startTime time.Time
@@ -109,12 +111,12 @@ func (ph *PublishHandler) responder() {
 			}
 		}
 
-		if success {
-			msg.Finish()
+		if success { // 前面判断HostPoolResponse,就是从主机池里面获取的producer发送有无错误
+			msg.Finish()  // 正常消费
 		} else {
-			msg.Requeue(-1)
+			msg.Requeue(-1) // 重新入队列
 		}
-
+		// 更新统计状态
 		ph.perAddressStatus[address].Status(startTime)
 		ph.timermetrics.Status(startTime)
 	}
@@ -201,7 +203,7 @@ func filterMessage(js map[string]interface{}, rawMsg []byte) ([]byte, error) {
 func (t *TopicHandler) HandleMessage(m *nsq.Message) error {
 	return t.publishHandler.HandleMessage(m, t.destinationTopic)
 }
-
+//consumer消息消费，主要就是过滤消息, 然后根据均衡策略算法去获取生产者,然后去发送异步消息, 禁用自动响应,使得异步消息结果在responder()方法中异步处理。
 func (ph *PublishHandler) HandleMessage(m *nsq.Message, destinationTopic string) error {
 	var err error
 	msgBody := m.Body
@@ -213,7 +215,7 @@ func (ph *PublishHandler) HandleMessage(m *nsq.Message, destinationTopic string)
 			log.Printf("ERROR: Unable to decode json: %s", msgBody)
 			return nil
 		}
-
+		// 根据配置进行消息过滤
 		if pass, backoff := ph.shouldPassMessage(js); !pass {
 			if backoff {
 				return errors.New("backoff")
@@ -228,17 +230,18 @@ func (ph *PublishHandler) HandleMessage(m *nsq.Message, destinationTopic string)
 			return err
 		}
 	}
-
+	// 计时开始, 通过时间差Sub 进行耗时计算
 	startTime := time.Now()
 
-	switch ph.mode {
+	switch ph.mode { // 根据均衡策略,生产者去发送异步消息
 	case ModeRoundRobin:
 		counter := atomic.AddUint64(&ph.counter, 1)
 		idx := counter % uint64(len(ph.addresses))
 		addr := ph.addresses[idx]
 		p := ph.producers[addr]
+		// 使用atomic原子操作, 自增 然后进行取模运算 轮询选取producer, 发布异步消息在ph.respChan进行通知
 		err = p.PublishAsync(destinationTopic, msgBody, ph.respChan, m, startTime, addr)
-	case ModeHostPool:
+	case ModeHostPool: // 在主机池里面根据算法获取生产者,然后发送异步消息
 		hostPoolResponse := ph.hostPool.Get()
 		p := ph.producers[hostPoolResponse.Host()]
 		err = p.PublishAsync(destinationTopic, msgBody, ph.respChan, m, startTime, hostPoolResponse)
@@ -250,7 +253,7 @@ func (ph *PublishHandler) HandleMessage(m *nsq.Message, destinationTopic string)
 	if err != nil {
 		return err
 	}
-	m.DisableAutoResponse()
+	m.DisableAutoResponse()  //禁用自动响应反馈 (就是auto finish)
 	return nil
 }
 
@@ -263,7 +266,8 @@ func hasArg(s string) bool {
 	})
 	return argExist
 }
-
+//主要做了解析命令行参数,根据配置创建producer,consumer,然后producer开启N个goroutine(responder())去异步处理消息与更新统计信息,
+// consumer通过直连或者服务发现形式去进行消费, 最后就是信号源监听程序收尾工作
 func main() {
 	var selectedMode int
 
@@ -279,7 +283,7 @@ func main() {
 		fmt.Printf("nsq_to_nsq v%s\n", version.Binary)
 		return
 	}
-
+	// 一系列 输入参数校验
 	if len(topics) == 0 || *channel == "" {
 		log.Fatal("--topic and --channel are required")
 	}
@@ -308,33 +312,33 @@ func main() {
 	if len(destNsqdTCPAddrs) == 0 {
 		log.Fatal("--destination-nsqd-tcp-address required")
 	}
-
+	// 生产者均衡使用了RoundRobin,HostPool 两种可选策略
 	switch *mode {
-	case "round-robin":
+	case "round-robin": // 轮询的方式
 		selectedMode = ModeRoundRobin
-	case "hostpool", "epsilon-greedy":
+	case "hostpool", "epsilon-greedy": // 主机池轮询 --- 贪婪算法
 		selectedMode = ModeHostPool
 	}
 
-	termChan := make(chan os.Signal, 1)
+	termChan := make(chan os.Signal, 1) // 信号源的监听对程序进行收尾工作
 	signal.Notify(termChan, syscall.SIGINT, syscall.SIGTERM)
 
 	defaultUA := fmt.Sprintf("nsq_to_nsq/%s go-nsq/%s", version.Binary, nsq.VERSION)
 
 	cCfg.UserAgent = defaultUA
-	cCfg.MaxInFlight = *maxInFlight
+	cCfg.MaxInFlight = *maxInFlight  //多个消费者 maxInFlight 需要配置,否则接收会有问题
 	pCfg.UserAgent = defaultUA
 
 	producers := make(map[string]*nsq.Producer)
-	for _, addr := range destNsqdTCPAddrs {
+	for _, addr := range destNsqdTCPAddrs { //这个地址表示指定的生产者的地址
 		producer, err := nsq.NewProducer(addr, pCfg)
 		if err != nil {
 			log.Fatalf("failed creating producer %s", err)
 		}
-		producers[addr] = producer
+		producers[addr] = producer // 生产者 添加进集合, key为地址
 	}
 
-	perAddressStatus := make(map[string]*timer_metrics.TimerMetrics)
+	perAddressStatus := make(map[string]*timer_metrics.TimerMetrics) // 给生产者添加 耗时统计
 	if len(destNsqdTCPAddrs) == 1 {
 		// disable since there is only one address
 		perAddressStatus[destNsqdTCPAddrs[0]] = timer_metrics.NewTimerMetrics(0, "")
@@ -345,14 +349,14 @@ func main() {
 		}
 	}
 
-	hostPool := hostpool.New(destNsqdTCPAddrs)
+	hostPool := hostpool.New(destNsqdTCPAddrs) // 根据模式选择池子策略 默认的 或者  贪婪算法
 	if *mode == "epsilon-greedy" {
 		hostPool = hostpool.NewEpsilonGreedy(destNsqdTCPAddrs, 0, &hostpool.LinearEpsilonValueCalculator{})
 	}
 
 	var consumerList []*nsq.Consumer
 
-	publisher := &PublishHandler{
+	publisher := &PublishHandler{   // 生产者 处理封装
 		addresses:        destNsqdTCPAddrs,
 		producers:        producers,
 		mode:             selectedMode,
@@ -364,7 +368,7 @@ func main() {
 
 	for _, topic := range topics {
 		consumer, err := nsq.NewConsumer(topic, *channel, cCfg)
-		consumerList = append(consumerList, consumer)
+		consumerList = append(consumerList, consumer)  // 多消费者循环添加到 consumerList ,并添加handlermessage添加
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -379,25 +383,25 @@ func main() {
 		}
 		consumer.AddConcurrentHandlers(topicHandler, len(destNsqdTCPAddrs))
 	}
-	for i := 0; i < len(destNsqdTCPAddrs); i++ {
+	for i := 0; i < len(destNsqdTCPAddrs); i++ { //  根据生产者个数去开启len个goroutine去异步处理发送结果以及统计
 		go publisher.responder()
 	}
 
-	for _, consumer := range consumerList {
+	for _, consumer := range consumerList { // 消费者直连配置的nsqds去连接消费
 		err := consumer.ConnectToNSQDs(nsqdTCPAddrs)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
 
-	for _, consumer := range consumerList {
+	for _, consumer := range consumerList { // 通过服务发现去建立连接进行消费
 		err := consumer.ConnectToNSQLookupds(lookupdHTTPAddrs)
 		if err != nil {
 			log.Fatal(err)
 		}
 	}
 
-	<-termChan // wait for signal
+	<-termChan // wait for signal  // 收到中断信号, consumer 停止消费,释放并退出
 
 	for _, consumer := range consumerList {
 		consumer.Stop()

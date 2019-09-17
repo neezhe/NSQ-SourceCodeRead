@@ -141,6 +141,6 @@ func main() {
 	signal.Notify(hupChan, syscall.SIGHUP)
 	signal.Notify(termChan, syscall.SIGINT, syscall.SIGTERM)
 
-	discoverer := newTopicDiscoverer(logf, opts, cfg, hupChan, termChan)
+	discoverer := newTopicDiscoverer(logf, opts, cfg, hupChan, termChan)  // 开始消费消息, 写出文件
 	discoverer.run()
 }

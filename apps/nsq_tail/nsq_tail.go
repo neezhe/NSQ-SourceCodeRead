@@ -109,14 +109,14 @@ func main() {
 	for i := 0; i < len(topics); i += 1 {
 		log.Printf("Adding consumer for topic: %s\n", topics[i])
 
-		consumer, err := nsq.NewConsumer(topics[i], *channel, cfg)
+		consumer, err := nsq.NewConsumer(topics[i], *channel, cfg) //创建消费者
 		if err != nil {
 			log.Fatal(err)
 		}
 
 		consumer.AddHandler(&TailHandler{topicName: topics[i], totalMessages: *totalMessages})
 
-		err = consumer.ConnectToNSQDs(nsqdTCPAddrs)
+		err = consumer.ConnectToNSQDs(nsqdTCPAddrs) //连接到nsqd
 		if err != nil {
 			log.Fatal(err)
 		}

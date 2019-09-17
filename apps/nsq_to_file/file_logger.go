@@ -38,17 +38,17 @@ type FileLogger struct {
 }
 
 func NewFileLogger(logf lg.AppLogFunc, opts *Options, topic string, cfg *nsq.Config) (*FileLogger, error) {
-	computedFilenameFormat, err := computeFilenameFormat(opts, topic)
+	computedFilenameFormat, err := computeFilenameFormat(opts, topic)  // 计算文件名
 	if err != nil {
 		return nil, err
 	}
 
-	consumer, err := nsq.NewConsumer(topic, opts.Channel, cfg)
+	consumer, err := nsq.NewConsumer(topic, opts.Channel, cfg)  // 初始化消息消费者
 	if err != nil {
 		return nil, err
 	}
 
-	f := &FileLogger{
+	f := &FileLogger{ //实现了 HandleMessage方法
 		logf:           logf,
 		opts:           opts,
 		topic:          topic,
@@ -58,9 +58,9 @@ func NewFileLogger(logf lg.AppLogFunc, opts *Options, topic string, cfg *nsq.Con
 		termChan:       make(chan bool),
 		hupChan:        make(chan bool),
 	}
-	consumer.AddHandler(f)
+	consumer.AddHandler(f)  // 接收到的消息通过channel (logChan )转发,在router()方法进行处理
 
-	err = consumer.ConnectToNSQDs(opts.NSQDTCPAddrs)
+	err = consumer.ConnectToNSQDs(opts.NSQDTCPAddrs) // 连接消费者
 	if err != nil {
 		return nil, err
 	}
@@ -78,29 +78,30 @@ func (f *FileLogger) HandleMessage(m *nsq.Message) error {
 	f.logChan <- m
 	return nil
 }
-
+//router( ) 方法主要功能是开启定时同步落盘数据, 等待接收新消息,记录阈值,满值在进行同步落盘.
+// 等待挂起,中断,退出信号去关闭同步文件,停止consumer消费.
 func (f *FileLogger) router() {
 	pos := 0
 	output := make([]*nsq.Message, f.opts.MaxInFlight)
 	sync := false
-	ticker := time.NewTicker(f.opts.SyncInterval)
+	ticker := time.NewTicker(f.opts.SyncInterval)  // 同步定时器
 	closeFile := false
 	exit := false
 
 	for {
 		select {
-		case <-f.consumer.StopChan:
+		case <-f.consumer.StopChan: // 接收到consumer停止信号, 退出循环 关闭并文件
 			sync = true
 			closeFile = true
 			exit = true
-		case <-f.termChan:
+		case <-f.termChan:  // 接收到中断,程序退出信号, 关闭定时器,停止消息消费,同步文件
 			ticker.Stop()
 			f.consumer.Stop()
 			sync = true
-		case <-f.hupChan:
+		case <-f.hupChan:  // 接收到挂起暂停信号, 关闭并同步文件
 			sync = true
 			closeFile = true
-		case <-ticker.C:
+		case <-ticker.C: // 同步定时器, 是否需要切割文件, 在进行同步
 			if f.needsRotation() {
 				if f.opts.SkipEmptyFiles {
 					closeFile = true
@@ -109,7 +110,7 @@ func (f *FileLogger) router() {
 				}
 			}
 			sync = true
-		case m := <-f.logChan:
+		case m := <-f.logChan:  // 接收到新的消息, 是否需要切割文件, 然后写入数据流, 并记录阈值 满了在同步
 			if f.needsRotation() {
 				f.updateFile()
 				sync = true
@@ -131,7 +132,7 @@ func (f *FileLogger) router() {
 			}
 		}
 
-		if sync || f.consumer.IsStarved() {
+		if sync || f.consumer.IsStarved() { // 同步标志 或者 可能RDY为0但是未关闭的状态
 			if pos > 0 {
 				f.logf(lg.INFO, "[%s/%s] syncing %d records to disk", f.topic, f.opts.Channel, pos)
 				err := f.Sync()
@@ -139,16 +140,18 @@ func (f *FileLogger) router() {
 					f.logf(lg.FATAL, "[%s/%s] failed syncing messages: %s", f.topic, f.opts.Channel, err)
 					os.Exit(1)
 				}
-				for pos > 0 {
+				for pos > 0 { // 阈值递减, 消息反馈已消费, 释放
 					pos--
 					m := output[pos]
 					m.Finish()
 					output[pos] = nil
 				}
 			}
-			sync = false
+			sync = false  // 重置标志位
 		}
-
+		// FileLogger Close() 方法功能概要
+		// 1. 释放文件资源之前先同步数据
+		// 2. 如果需要，将文件从工作目录移动到输出目录，注意不要覆盖现有文件,如果文件移动出现失败, 使用rev序号拼接文件名进行重试
 		if closeFile {
 			f.Close()
 			closeFile = false
@@ -159,7 +162,9 @@ func (f *FileLogger) router() {
 		}
 	}
 }
-
+// FileLogger Close() 方法功能概要
+// 1. 释放文件资源之前先同步数据
+// 2. 如果需要，将文件从工作目录移动到输出目录，注意不要覆盖现有文件,如果文件移动出现失败, 使用rev序号拼接文件名进行重试
 func (f *FileLogger) Close() {
 	if f.out == nil {
 		return
@@ -284,7 +289,7 @@ func (f *FileLogger) needsRotation() bool {
 func (f *FileLogger) updateFile() {
 	f.Close() // uses current f.filename and f.rev to resolve rename dst conflict
 
-	filename := f.currentFilename()
+	filename := f.currentFilename()  // 文件名格式 "<TOPIC>.<HOST><REV>.<DATETIME>.log"
 	if filename != f.filename {
 		f.rev = 0 // reset revision to 0 if it is a new filename
 	} else {
@@ -293,7 +298,7 @@ func (f *FileLogger) updateFile() {
 	f.filename = filename
 	f.openTime = time.Now()
 
-	fullPath := path.Join(f.opts.WorkDir, filename)
+	fullPath := path.Join(f.opts.WorkDir, filename)   //  创建文件夹
 	err := makeDirFromPath(f.logf, fullPath)
 	if err != nil {
 		f.logf(lg.FATAL, "[%s/%s] unable to create dir: %s", f.topic, f.opts.Channel, err)
@@ -301,6 +306,10 @@ func (f *FileLogger) updateFile() {
 	}
 
 	var fi os.FileInfo
+	// 文件命名冲突检测
+	// 需要开启gzip和需要切割文件的情况新建,或者就是追加模式
+	// 切割文件判断时间 和 文件大小
+	// 打开文件流,
 	for ; ; f.rev++ {
 		absFilename := strings.Replace(fullPath, "<REV>", fmt.Sprintf("-%06d", f.rev), -1)
 

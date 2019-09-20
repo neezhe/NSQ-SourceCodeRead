@@ -87,8 +87,9 @@ func (ph *PublishHandler) responder() {
 	var startTime time.Time
 	var address string
 	var hostPoolResponse hostpool.HostPoolResponse
+	fmt.Println("=======ph.respChan==init========")
 
-	for t := range ph.respChan {
+	for t := range ph.respChan { //这玩意从哪里来？由HandleMessage中的PublishAsyc从拿到
 		switch ph.mode {
 		case ModeRoundRobin:
 			msg = t.Args[0].(*nsq.Message)
@@ -101,7 +102,7 @@ func (ph *PublishHandler) responder() {
 			hostPoolResponse = t.Args[2].(hostpool.HostPoolResponse)
 			address = hostPoolResponse.Host()
 		}
-
+		fmt.Println("=======ph.respChan==========",string(msg.Body))
 		success := t.Error == nil
 
 		if hostPoolResponse != nil {
@@ -208,7 +209,7 @@ func (t *TopicHandler) HandleMessage(m *nsq.Message) error {
 func (ph *PublishHandler) HandleMessage(m *nsq.Message, destinationTopic string) error {
 	var err error
 	msgBody := m.Body
-
+	fmt.Println("=========HandleMessage=======",string(msgBody))
 	if *requireJSONField != "" || len(whitelistJSONFields) > 0 {
 		var js map[string]interface{}
 		err = json.Unmarshal(msgBody, &js)
@@ -241,7 +242,7 @@ func (ph *PublishHandler) HandleMessage(m *nsq.Message, destinationTopic string)
 		addr := ph.addresses[idx]
 		p := ph.producers[addr]
 		// 使用atomic原子操作, 自增 然后进行取模运算 轮询选取producer, 发布异步消息在ph.respChan进行通知
-		err = p.PublishAsync(destinationTopic, msgBody, ph.respChan, m, startTime, addr) //生产者开始发送消息
+		err = p.PublishAsync(destinationTopic, msgBody, ph.respChan, m, startTime, addr) //生产者开始发送消息,由此可见是等消费者收到消息后，此处的生产者才开始发送消息。
 	case ModeHostPool: // 在主机池里面根据算法获取生产者,然后发送异步消息
 		hostPoolResponse := ph.hostPool.Get()
 		p := ph.producers[hostPoolResponse.Host()]
@@ -366,7 +367,6 @@ func main() {
 		perAddressStatus: perAddressStatus,
 		timermetrics:     timer_metrics.NewTimerMetrics(*statusEvery, "[aggregate]:"),
 	}
-
 	for _, topic := range topics {
 		consumer, err := nsq.NewConsumer(topic, *channel, cCfg)
 		consumerList = append(consumerList, consumer)  // 多消费者循环添加到 consumerList ,并添加handlermessage添加
@@ -382,7 +382,7 @@ func main() {
 			publishHandler:   publisher,
 			destinationTopic: publishTopic,
 		}
-		consumer.AddConcurrentHandlers(topicHandler, len(destNsqdTCPAddrs)) //生产者竟然在这里开始发消息，发消息的函数为(t *TopicHandler) HandleMessage
+		consumer.AddConcurrentHandlers(topicHandler, len(destNsqdTCPAddrs)) //生产者竟然在这里开始发消息，发消息的函数为(t *TopicHandler) HandleMessage，里面走到p.PublishAsyn开始发送。
 	}
 	for i := 0; i < len(destNsqdTCPAddrs); i++ { //  根据生产者个数去开启len个goroutine去异步处理发送结果以及统计
 		go publisher.responder()

@@ -52,3 +52,4 @@ profile
 *.sw[op]
 
 .idea/workspace.xml
+*.puml

@@ -264,7 +264,7 @@ func (n *NSQD) Main() error {
 	//tcp服务可以当生产者发消息也可以当消费者订阅消息，http服务可以用来当生产者发消息（不可以订阅）还可以提供给nsqadmin获取该nsqd本地topic和channel信息
 	tcpServer := &tcpServer{ctx: ctx}
 	n.waitGroup.Wrap(func() { //Wrap里面开启了一个协程运行func(){...}，就会运行exitFunc
-		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf)) //tcp服务，tcp的处理函数和nsqlookupd中的不一样。它可以PUB
+		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf)) //tcp服务，4150端口，tcp的处理函数和nsqlookupd中的不一样。它可以PUB
 	})
 	//注意：下面实现了如何根据listen句柄来构建http服务，学了一招。
 	httpServer := newHTTPServer(ctx, false, n.getOpts().TLSRequired == TLSRequired)

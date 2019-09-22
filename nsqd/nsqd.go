@@ -97,7 +97,7 @@ func New(opts *Options) (*NSQD, error) {
 	n := &NSQD{
 		startTime:            time.Now(),
 		topicMap:             make(map[string]*Topic), //make和new的功能相似都是分配空间，但是make只能用在slice/map/chan上，因为这3中类型在使用前必须进行初始化,结构体中只是类型声明，此处进行了初始化，相当于topicMap：=map[string]*Topic{}
-		clients:              make(map[int64]Client), //标识符id对应的client，来一个client就存储一下。存的是订阅了此nsqd所维护的topic的客户端实体
+		clients:              make(map[int64]Client),  //标识符id对应的client，来一个client就存储一下。存的是订阅了此nsqd所维护的topic的客户端实体
 		exitChan:             make(chan int),
 		notifyChan:           make(chan interface{}),
 		optsNotificationChan: make(chan struct{}, 1),
@@ -105,10 +105,10 @@ func New(opts *Options) (*NSQD, error) {
 	}
 	//如果我们创建的客户端所有属性都用默认值的话可用httpcli:=&http.Client{}
 	httpcli := http_api.NewClient(nil, opts.HTTPClientConnectTimeout, opts.HTTPClientRequestTimeout) //设置http连接的超时时间，没有用默认的。
-	n.ci = clusterinfo.New(n.logf, httpcli) //第一个参数是一个logf函数的指针，现在先存放到nsqd结构体中的ci元素上，以后在使用这个函数的时候传入参数就行了，比如162行的n.logf（，，）。
+	n.ci = clusterinfo.New(n.logf, httpcli)                                                          //第一个参数是一个logf函数的指针，现在先存放到nsqd结构体中的ci元素上，以后在使用这个函数的时候传入参数就行了，比如162行的n.logf（，，）。
 
 	n.lookupPeers.Store([]*lookupPeer{}) //n.lookupPeers是atomic.Value类型，存放需要做并发保护的变量
-	n.swapOpts(opts) //原子操作，把新的opts存到NSQD.opts这个变量中，其实是替换NSQD中的opts变量。
+	n.swapOpts(opts)                     //原子操作，把新的opts存到NSQD.opts这个变量中，其实是替换NSQD中的opts变量。
 	n.errValue.Store(errStore{})
 
 	err = n.dl.Lock() //linux中回用到。锁定数据目录（Exit函数中解锁）
@@ -254,7 +254,7 @@ func (n *NSQD) Main() error {
 	exitCh := make(chan error) // 2. 同 NSQLookupd 类似，构建一个退出 hook 函数，且在退出时仅执行一次
 	var once sync.Once
 	exitFunc := func(err error) {
-		once.Do(func() {  //无论once处在多少个协程里面，Do函数的参数表示的函数只会被执行一次。
+		once.Do(func() { //无论once处在多少个协程里面，Do函数的参数表示的函数只会被执行一次。
 			if err != nil {
 				n.logf(LOG_FATAL, "%s", err)
 			}
@@ -634,16 +634,16 @@ func (n *NSQD) resizePool(num int, workCh chan *Channel, responseCh chan bool, c
 	// 反之， 需要减少已有的 queueScanWorker 的数量， 即往 closeCh 中 push 一条消息，强制 queueScanWorker goroutine 退出
 	for {
 		//最开始poolSize是为0的，后面调整poolSize使其值等于idealPoolSize
-		if idealPoolSize == n.poolSize {// 当前启动的worker数等于设定的idealPoolSize，不需要任何的增加或减少，那么直接返回，
+		if idealPoolSize == n.poolSize { // 当前启动的worker数等于设定的idealPoolSize，不需要任何的增加或减少，那么直接返回，
 			break
-		} else if idealPoolSize < n.poolSize {// 最开始是不会进入的此if的，因为poolSize为0。如果大于了idealPoolSize，通过closeCh关闭一个worker
+		} else if idealPoolSize < n.poolSize { // 最开始是不会进入的此if的，因为poolSize为0。如果大于了idealPoolSize，通过closeCh关闭一个worker
 			// queueScanWorker 多了, 减少一个
 			// 利用 chan 的特性, 向closeCh 推一个消息, 这样 所有的 worCh 就会随机有一个收到这个消息（这是go chan本身的语言特性）, 然后关闭
 			// 细节: 这里跟 exitCh 的用法不同, exitCh 是要告知 "所有的" looper 退出, 所以使用的是 close(exitCh) 的用法
 			// 而如果想 让其中 一个 退出, 则使用 exitCh <- 1 的用法
 			closeCh <- 1 //此处关的是下面if中的协程
 			n.poolSize--
-		} else {// 如果未达到idealPoolSize，启动worker的goroutine
+		} else { // 如果未达到idealPoolSize，启动worker的goroutine
 			// queueScanWorker 少了, 增加一个
 			n.waitGroup.Wrap(func() {
 				n.queueScanWorker(workCh, responseCh, closeCh) //开一个死循环的ScanWorker协程
@@ -730,13 +730,13 @@ func (n *NSQD) queueScanLoop() {
 			if len(channels) == 0 {
 				continue
 			}
-		// 3.2 每过 QueueScanRefreshInterval 时间（默认5s），
-		// 则调整 pool 的大小，即调整开启的 queueScanWorker 的数量为 pool 的大小
+			// 3.2 每过 QueueScanRefreshInterval 时间（默认5s），
+			// 则调整 pool 的大小，即调整开启的 queueScanWorker 的数量为 pool 的大小
 		case <-refreshTicker.C: // 重新调整 worker 数量
 			channels = n.channels()
 			n.resizePool(len(channels), workCh, responseCh, closeCh)
 			continue
-		case <-n.exitChan:// 3.3 nsqd 已退出
+		case <-n.exitChan: // 3.3 nsqd 已退出
 			goto exit
 		}
 

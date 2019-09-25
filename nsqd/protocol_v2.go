@@ -278,7 +278,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			flusherChan = nil
 			// force flush
 			client.writeLock.Lock() //client.writeLock是个读写锁
-			err = client.Flush() // 强制下刷缓冲区
+			err = client.Flush() // 强制下刷缓冲区。强烈注意bufio.Writer仅在缓存充满或者显式调用Flush方法时处理(发送)数据，即其write函数只是在填写缓冲区而已。
 			client.writeLock.Unlock()
 			if err != nil {
 				goto exit //当for 和 select结合使用时，break语言是无法跳出for之外的，因此若要break出来，这里需要加一个标签，使用goto， 或者break 到具体的位置。
@@ -300,7 +300,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 		//2.被初始化但是没有值的channel或者没有初始化或者被设为nil的channel，其case永远不会被进入，它没有被分配内存空间,相当于这个channel被select忽略。
 		//3.无缓冲的channel，"没数据取"和"数据没被取走的情况下写"都会阻塞
 		//4.有缓冲的，没数据的时候才阻塞，写满的时候才阻塞，其他时候不阻塞。
-		case <-flusherChan: // 消费者独有。定时刷新消息发送缓冲区。
+		case <-flusherChan: // 消费者独有。定时刷新消息发送缓冲区。发送到哪里？发送到conn上，也就是消费者。
 			client.writeLock.Lock()
 			err = client.Flush()
 			client.writeLock.Unlock()
@@ -311,7 +311,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			// 客户端处理消息的能力发生了变化会触发此处解除阻塞，比如客户端刚消费了某个消息
 		case <-client.ReadyStateChan: //消费者独有。这个case下面没有什么要处理的，目的就是解除阻塞，进行下一轮for循环重新执行一下上面的if语句。
 		case subChannel = <-subEventChan: //消费者独有。subChannel在下面被用到，subChannel就是订阅Chnanel,Client需要发送一个SUB请求来订阅Channel
-			// 将 subEventChan 重置为nil，原因表示之后不能从此通道中接收到消息
+			// 将 subEventChan 重置为nil，原因表示一个消费者订阅了一个channel后就，以后就一致监视这个channel,所以这个case只在订阅的时候被使用一次。
 			// 而置为nil的原因是，在SUB命令请求方法中第一行即为检查此客户端是否处于 stateInit 状态，
 			// 而调用 SUB 了之后，状态变为 stateSubscribed
 			subEventChan = nil //表示再也不能被触发，除非有新的订阅，但是subChannel不为nil
@@ -705,7 +705,7 @@ func (p *protocolV2) SUB(client *clientV2, params [][]byte) ([]byte, error) {
 	//下面这行很重要，设置本client所订阅的channel，这样接下来的SubEventChan就会由当前clienid开启的后台协程来订阅这个channel的消息。
 	// 7.这一步比较关键，将订阅的 channel实例传递给了client，同时将channel发送到了client.SubEventChan 通道中。
 	// 后面的SubEventChan就会使得当前的 client在一个 goroutine中订阅这个channel的消息
-	client.Channel = channel //在client中也记录下这个channel
+	client.Channel = channel //记录下这个消费者对应的channel
 	// update message pump
 	client.SubEventChan <- channel //通知client的messagePump开始工作了
 

@@ -320,10 +320,10 @@ func (t *Topic) messagePump() { //此函数只在NewTopic的时候被调用。
 				continue
 			}
 		case <-t.channelUpdateChan: //只在channel更新的时候才加锁获取channel,这样就避免了一次循环就加锁获取的低效操作。
-			//上面避免锁竞争, 缓存了这个topic已存在的所有channel。假如更新channel，会通知过来,需要重新初始化 memoryMsgChan及 backendChan
+			//上面避免锁竞争, 缓存了这个topic已存在的所有channel。
 			chans = chans[:0]
 			t.RLock()
-			for _, c := range t.channelMap {
+			for _, c := range t.channelMap { //重新拿所有的channel
 				chans = append(chans, c)
 			}
 			t.RUnlock()
@@ -364,7 +364,7 @@ func (t *Topic) messagePump() { //此函数只在NewTopic的时候被调用。
 				channel.PutMessageDeferred(chanMsg, chanMsg.deferred)
 				continue
 			}
-			err := channel.PutMessage(chanMsg) // 将 msg push 到普通消息队列 in-flight queue
+			err := channel.PutMessage(chanMsg) // 将topic上的消息传到channel上
 			if err != nil {
 				t.ctx.nsqd.logf(LOG_ERROR,
 					"TOPIC(%s) ERROR: failed to put msg(%s) to channel(%s) - %s",

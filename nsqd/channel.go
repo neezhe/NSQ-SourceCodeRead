@@ -631,7 +631,7 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 		c.inFlightMutex.Lock()
 		// 如果 栈顶元素的优先级 小于参数
 		// 弹出 栈顶元素并返回
-		msg, _ := c.inFlightPQ.PeekAndShift(t) // 从队列中获取已经过期的消息
+		msg, _ := c.inFlightPQ.PeekAndShift(t) // 从队列中获取已经过期的消息，这个队列中的消息在protocolV2.messagePump中被压入。
 		c.inFlightMutex.Unlock()
 
 		if msg == nil {//如果没有取到消息，即大于参数，那么就返回，仍然保持dirty := false

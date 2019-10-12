@@ -463,7 +463,7 @@ func (n *NSQD) Exit() {
 
 	n.logf(LOG_INFO, "NSQ: stopping subsystems")
 	close(n.exitChan)
-	n.waitGroup.Wait()
+	n.waitGroup.Wait()   //此处等待所有都退出
 	n.dl.Unlock()
 	n.logf(LOG_INFO, "NSQ: bye")
 }

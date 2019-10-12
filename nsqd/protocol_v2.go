@@ -108,7 +108,7 @@ func (p *protocolV2) IOLoop(conn net.Conn) error {
 			}
 			continue
 		}
-		// 假如命令是有 '响应' 的, 发送响应
+		// 假如命令是有 '响应' 的, 发送响应.此处的放回是针对此刻这个命令的，messagePump中的send返回的是消息。
 		if response != nil {
 			err = p.Send(client, frameTypeResponse, response)
 			if err != nil {

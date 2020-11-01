@@ -25,7 +25,7 @@ type lookupPeer struct {
 	state           int32 // 当前 lookupPeer 连接的状态 5 种状态之一
 	connectCallback func(*lookupPeer) // 成功连接到指定的地址后的回调函数
 	maxBodySize     int64 // 在读取命令请求的处理返回结果时，消息体的最大字节数
-	Info            peerInfo
+	Info            peerInfo //上面的都是nsqd这边的信息，此处peerInfo就是identify之后lookupd返回的信息。
 }
 
 // peerInfo contains metadata for a lookupPeer instance (and is JSON marshalable)

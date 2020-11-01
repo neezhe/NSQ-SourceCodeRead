@@ -48,7 +48,7 @@ func newHTTPServer(ctx *context, tlsEnabled bool, tlsRequired bool) *httpServer 
 	router.PanicHandler = http_api.LogPanicHandler(ctx.nsqd.logf)
 	router.NotFound = http_api.LogNotFoundHandler(ctx.nsqd.logf)
 	router.MethodNotAllowed = http_api.LogMethodNotAllowedHandler(ctx.nsqd.logf)
-	s := &httpServer{ //router已经是一个多路复用器了，但是此处又包了一层httpServer，return的是httpServer，所以httpServer必须要实现ServerHTTP，并且其ServerHTTP最终调用的必须要是router的ServerHTTP
+	s := &httpServer{ //httpServer所有的变量和方法都是私有的(除了ServerHTTP是公有的),router已经是一个多路复用器了，但是此处又包了一层httpServer，return的是httpServer，所以httpServer必须要实现ServerHTTP，并且其ServerHTTP最终调用的必须要是router的ServerHTTP
 		ctx:         ctx,
 		tlsEnabled:  tlsEnabled,
 		tlsRequired: tlsRequired,

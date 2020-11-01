@@ -171,7 +171,7 @@ func New(opts *Options) (*NSQD, error) {
 		return nil, fmt.Errorf("listen (%s) failed - %s", opts.HTTPAddress, err)
 	}
 	if n.tlsConfig != nil && opts.HTTPSAddress != "" {
-		n.httpsListener, err = tls.Listen("tcp", opts.HTTPSAddress, n.tlsConfig) //https
+		n.httpsListener, err = tls.Listen("tcp", opts.HTTPSAddress, n.tlsConfig) //443
 		if err != nil {
 			return nil, fmt.Errorf("listen (%s) failed - %s", opts.HTTPSAddress, err)
 		}
@@ -463,7 +463,7 @@ func (n *NSQD) Exit() {
 
 	n.logf(LOG_INFO, "NSQ: stopping subsystems")
 	close(n.exitChan)
-	n.waitGroup.Wait()
+	n.waitGroup.Wait()   //此处等待所有都退出
 	n.dl.Unlock()
 	n.logf(LOG_INFO, "NSQ: bye")
 }
@@ -724,7 +724,7 @@ func (n *NSQD) queueScanLoop() {
 		select {
 		// 3.1 每过 QueueScanInterval 时间（默认100ms），
 		// 则开始随机挑选 QueueScanSelectionCount 个 channel。转到 loop: 开始执行
-		case <-workTicker.C: // 开始一次任务的派发，就是向workCh队列中压入数据
+		case <-workTicker.C: // 开始一次任务的派发，若没有channels则continue，若有channels则可以执行select之外的代码
 			if len(channels) == 0 {
 				continue
 			}
@@ -783,8 +783,8 @@ func buildTLSConfig(opts *Options) (*tls.Config, error) {
 	}
 
 	tlsClientAuthPolicy := tls.VerifyClientCertIfGiven
-
-	cert, err := tls.LoadX509KeyPair(opts.TLSCert, opts.TLSKey)
+	//X.509是一种非常通用的证书格式。
+	cert, err := tls.LoadX509KeyPair(opts.TLSCert, opts.TLSKey) //第一步，读取证书和私钥两个文件，并返回一个 tls.Certificate变量
 	if err != nil {
 		return nil, err
 	}
@@ -797,8 +797,8 @@ func buildTLSConfig(opts *Options) (*tls.Config, error) {
 		tlsClientAuthPolicy = tls.NoClientCert
 	}
 
-	tlsConfig = &tls.Config{
-		Certificates: []tls.Certificate{cert},
+	tlsConfig = &tls.Config{ //此为第二步。第3步在443上tls.Listen，第4步，accept
+		Certificates: []tls.Certificate{cert}, //把证书填进去
 		ClientAuth:   tlsClientAuthPolicy,
 		MinVersion:   opts.TLSMinVersion,
 		MaxVersion:   tls.VersionTLS12, // enable TLS_FALLBACK_SCSV prior to Go 1.5: https://go-review.googlesource.com/#/c/1776/

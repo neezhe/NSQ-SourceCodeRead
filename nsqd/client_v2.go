@@ -50,7 +50,7 @@ type identifyEvent struct {
 type clientV2 struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
 	//两个变量来判断客户端是否准备好接收消息
-	ReadyCount    int64 //ReadyCount变量就是我们所说的RDY计数，用于表示当前客户端能够接收的消息数量，直接由消费者设置下来。
+	ReadyCount    int64 //ReadyCount变量就是我们所说的RDY计数，用于表示当前客户端能够接收的消息数量，直接由消费者设置下来的rdy容量，这个值不会根据消息的处理而变化，InFlightCount不允许大于ReadyCount。
 	InFlightCount int64	//InFlightCount，该变量表示当前仍在“飞行中”即仍在发送过程中或是客户端处理过程中的消息数量
 	MessageCount  uint64
 	FinishCount   uint64

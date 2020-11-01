@@ -15,7 +15,7 @@ import (
 //当连接建立成功后（不要忘记在这之前发送了一个MagicV1的消息），会执行下面这个回调函数。
 //此回调函数的主要逻辑为nsqd向nsqlookupd发送一个IDENTIFY命令请求以表明自己身份信息，然后遍历自己所维护的topicMap集合，
 // 构建所有即将执行的REGISTER命令请求，最后依次执行每一个请求。
-func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
+func connectCallback(n *NSQD, hostname string) func(*lookupPeer) { //返回是函数，闭包的妙用
 	return func(lp *lookupPeer) {
 		// 1. 打包 nsqd 自己的信息，主要是与网络连接相关，这个传个nsqlookupd之后在IDENTIFY中被解析到了peerInfo结构体中
 		ci := make(map[string]interface{})
@@ -58,7 +58,7 @@ func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 		// 4. 构建所有即将发送的 REGISTER 请求，用于向 nsqlookupd注册信息 topic 和channel信息
 		var commands []*nsq.Command
 		n.RLock()
-		for _, topic := range n.topicMap {
+		for _, topic := range n.topicMap { //n.topicMap数据来自于哪里？刚上电的时候，会从文件中读取。
 			topic.RLock()
 			if len(topic.channelMap) == 0 {
 				commands = append(commands, nsq.Register(topic.name, ""))

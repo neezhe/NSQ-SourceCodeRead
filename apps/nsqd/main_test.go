@@ -16,18 +16,18 @@ func TestConfigFlagParsing(t *testing.T) {
 	opts.Logger = test.NewTestLogger(t)
 
 	flagSet := nsqdFlagSet(opts)
-	flagSet.Parse([]string{})
+	flagSet.Parse([]string{}) //nolint
 
 	var cfg config
 	f, err := os.Open("../../contrib/nsqd.cfg.example")
 	if err != nil {
 		t.Fatalf("%s", err)
 	}
-	toml.DecodeReader(f, &cfg)
+	toml.DecodeReader(f, &cfg) //nolint
 	cfg.Validate()
 
 	options.Resolve(opts, flagSet, cfg)
-	nsqd.New(opts)
+	nsqd.New(opts) //nolint
 
 	if opts.TLSMinVersion != tls.VersionTLS10 {
 		t.Errorf("min %#v not expected %#v", opts.TLSMinVersion, tls.VersionTLS10)

@@ -122,7 +122,7 @@ func (lp *lookupPeer) Command(cmd *nsq.Command) ([]byte, error) {
 		return nil, nil
 	}
 	//7. 发送指定的命令请求到对端（包括命令的 name、params，一个空行以及body（写body之前要先写入其长度））
-	_, err := cmd.WriteTo(lp)
+	_, err := cmd.WriteTo(lp) //这里的lp表示写入器，下面的lp表示读入器
 	if err != nil {
 		lp.Close()
 		return nil, err

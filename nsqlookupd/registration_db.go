@@ -15,60 +15,67 @@ import (
 //简单跟踪nsqlookupd/nsqlookupd.go中的protocol.TCPServer(tcpListener, tcpServer, l.opts.Logger)，可发现RegistrationDB保存nsqd的注册信息
 // RegistrationDB 以 map 结构包含了所有节点信息; 名为db, 实则最多算个cache罢了,但是实现了一系列的增删改查封装，同时使用RWMutex做并发控制。
 type RegistrationDB struct { //见有道笔记图解
-	sync.RWMutex  //读写锁，因为对Registration的增删改查可能多个线程在同时进行，所以需要加锁保证安全。
+	sync.RWMutex                                 //读写锁，因为对Registration的增删改查可能多个线程在同时进行，所以需要加锁保证安全。
 	registrationMap map[Registration]ProducerMap //以 Registration 为 key 储存 Producers, 即生产者nsqd。把topic/channel和producer关联起来。
 	//这个key是怎么产生的？例如创建一个“aa”的topic,那么产生的key就为 Registration{"topic", “aa”, ""}
 }
 type Registration struct {
-	Category string // 这个用来指定key的类型，比如是topic或者channel
+	Category string // 这个用来指定key的类型，比如是topic或者channel或者client(第一次连接nsqlookup的IDENTITY验证信息 )
 	Key      string // 存放定义的topic值
 	SubKey   string // 如果是channel类型，存放channel值
 }
 type Registrations []Registration
+
 //通过curl 'http://127.0.0.1:4161/lookup?topic=topic_name'命令查看对应topic的信息
 type PeerInfo struct {
-	lastUpdate       int64 //上次更新时间.
-	id               string // 唯一id表示这个Producer
-	RemoteAddress    string `json:"remote_address"` // 远程地址
-	Hostname         string `json:"hostname"` // 主机名字
-	BroadcastAddress string `json:"broadcast_address"`// 广播地址， 和远程地址区别？？
-	TCPPort          int    `json:"tcp_port"`// tcp端口
-	HTTPPort         int    `json:"http_port"` // http 端口
-	Version          string `json:"version"`// 版本，大概用来做版本兼容使用
+	lastUpdate       int64  //上次更新时间.
+	id               string // 唯一id表示这个Producer,就是nsqd的ip:port
+	RemoteAddress    string `json:"remote_address"`    // 远程地址，和id竟然都是一个意思
+	Hostname         string `json:"hostname"`          // 主机名字
+	BroadcastAddress string `json:"broadcast_address"` // 广播地址， 和远程地址区别？？
+	TCPPort          int    `json:"tcp_port"`          // tcp端口
+	HTTPPort         int    `json:"http_port"`         // http 端口
+	Version          string `json:"version"`           // 版本，大概用来做版本兼容使用
 }
+
 //对于nsqlookupd来说，它的producer就是nsqd，每个Producer代表一个生产者，存放该Producer的一些信息:
 type Producer struct {
-	peerInfo     *PeerInfo //// 节点信息
+	peerInfo *PeerInfo //// 节点信息
 	//是否删除，关于tombstones官网有介绍http://nsq.io/components/nsqlookupd.html#deletion_tombstones
 	//英语不行，看不懂，网上查了一下，有翻译成逻辑删除的意思，目前还没搞懂这块
 	//大体知道是和删除nsqd有关
-	tombstoned   bool
+	tombstoned bool
 	//删除时间
 	tombstonedAt time.Time
 }
+
 //定义类型Producers为Producer的slice
 type Producers []*Producer
-type ProducerMap map[string]*Producer //string是PeerInfo中的唯一标识符id
+type ProducerMap map[string]*Producer //string是PeerInfo中的唯一标识符id(就是nsqd的ip:port字符串)
 
 func (p *Producer) String() string {
 	return fmt.Sprintf("%s [%d, %d]", p.peerInfo.BroadcastAddress, p.peerInfo.TCPPort, p.peerInfo.HTTPPort)
 }
+
 //将Producer标记为tombstone，并记录标记的时间
 func (p *Producer) Tombstone() {
 	p.tombstoned = true
 	p.tombstonedAt = time.Now()
 }
+
 //判断Producer是否为tombstone状态
 func (p *Producer) IsTombstoned(lifetime time.Duration) bool {
 	//func (t Time) Sub(u Time) Duration 计算两个时间的差(time.Now() - p.tombstonedAt)
 	return p.tombstoned && time.Now().Sub(p.tombstonedAt) < lifetime
 }
+
 //新建RegistrationDB类型变量
 func NewRegistrationDB() *RegistrationDB {
 	return &RegistrationDB{
 		registrationMap: make(map[Registration]ProducerMap), //make一个
 	}
 }
+
 //管理RegistrationDB，本质上使用的就是map的增、删、查操作, 无非是先构建Registration类型的key, 根据key去操作。
 // 因为可能多个操作同时在并行执行，为了保住线程安全，每个涉及到RegistrationDB.registrationMap的增、删、查操作都利用了RegistrationDB定义的读写锁进行加锁，
 func (r *RegistrationDB) AddRegistration(k Registration) { //创建Topic和Chnnel是通过Http请求接口完成。通过http创建一个topic或channel.
@@ -77,9 +84,10 @@ func (r *RegistrationDB) AddRegistration(k Registration) { //创建Topic和Chnne
 	defer r.Unlock()
 	_, ok := r.registrationMap[k] //Registration是否已经在registrationMap
 	if !ok {
-		r.registrationMap[k] = make(map[string]*Producer)//只设置了registrationMap的key，value是一个空的Producers列表，后续添加Producer的工作则交给了AddProducer方法
+		r.registrationMap[k] = make(map[string]*Producer) //只设置了registrationMap的key，value是一个空的Producers列表，后续添加Producer的工作则交给了AddProducer方法
 	}
 }
+
 //通过http调用AddRegistration完成注册topic或channel后，下面tcp通过AddProducer来添加producer,负责将Producer添加到注册表中key对应的producers列表中
 // add a producer to a registration
 //就是对registrationMap 的查询，如果当前这个客户端以及在映射表里面就不需要处理，否则就加进去。
@@ -92,8 +100,8 @@ func (r *RegistrationDB) AddProducer(k Registration, p *Producer) bool {
 	}
 	producers := r.registrationMap[k] //返回值是一个ProducerMap类型
 	//看这个producer是否已存在
-	_, found := producers[p.peerInfo.id]
-	if found == false { //无论这个Registration在registrationMap确实没有value，此处就把这个p给他当value
+	_, found := producers[p.peerInfo.id] //可见同一个topic下可以有不同ip的nsqd,但这些nsqd的生产者可以相同
+	if !found {
 		//producer不存在时，则添加
 		producers[p.peerInfo.id] = p
 	}
@@ -137,6 +145,7 @@ func (r *RegistrationDB) RemoveRegistration(k Registration) {
 func (r *RegistrationDB) needFilter(key string, subkey string) bool {
 	return key == "*" || subkey == "*"
 }
+
 //根据category key subkey查找registrations slice
 func (r *RegistrationDB) FindRegistrations(category string, key string, subkey string) Registrations {
 	r.RLock()
@@ -144,7 +153,7 @@ func (r *RegistrationDB) FindRegistrations(category string, key string, subkey s
 	if !r.needFilter(key, subkey) { //此处如果没有*通配符，则唯一查找
 		k := Registration{category, key, subkey}
 		if _, ok := r.registrationMap[k]; ok { //因为所有的Registration都唯一的存在registrationMap中，所以此处这样判断其是否存在
-			return Registrations{k}//数组，所以要用大括号
+			return Registrations{k} //数组，所以要用大括号
 		}
 		return Registrations{}
 	}
@@ -160,6 +169,7 @@ func (r *RegistrationDB) FindRegistrations(category string, key string, subkey s
 	//返回满足通配符条件的Registrations
 	return results
 }
+
 //根据category key subkey查找Producers slice，逻辑和上面的FindRegistrations差不多
 func (r *RegistrationDB) FindProducers(category string, key string, subkey string) Producers {
 	r.RLock()
@@ -185,6 +195,7 @@ func (r *RegistrationDB) FindProducers(category string, key string, subkey strin
 	}
 	return retProducers
 }
+
 //根据producer.peerInfo.id查找registration
 func (r *RegistrationDB) LookupRegistrations(id string) Registrations {
 	r.RLock()
@@ -210,6 +221,7 @@ func (k Registration) IsMatch(category string, key string, subkey string) bool {
 	}
 	return true
 }
+
 //获取指定的registrations
 func (rr Registrations) Filter(category string, key string, subkey string) Registrations {
 	output := Registrations{}
@@ -220,6 +232,7 @@ func (rr Registrations) Filter(category string, key string, subkey string) Regis
 	}
 	return output
 }
+
 //获取registrations中的所有key
 func (rr Registrations) Keys() []string {
 	keys := make([]string, len(rr))
@@ -228,6 +241,7 @@ func (rr Registrations) Keys() []string {
 	}
 	return keys
 }
+
 //获取registrations中的所有SubKey
 func (rr Registrations) SubKeys() []string {
 	subkeys := make([]string, len(rr))
@@ -236,6 +250,7 @@ func (rr Registrations) SubKeys() []string {
 	}
 	return subkeys
 }
+
 //获取所有可用的producer，即nsqd
 func (pp Producers) FilterByActive(inactivityTimeout time.Duration, tombstoneLifetime time.Duration) Producers {
 	now := time.Now()
@@ -255,6 +270,7 @@ func (pp Producers) FilterByActive(inactivityTimeout time.Duration, tombstoneLif
 	}
 	return results
 }
+
 //获取Producers中的所有peerInfo
 func (pp Producers) PeerInfo() []*PeerInfo {
 	results := []*PeerInfo{}

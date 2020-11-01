@@ -20,15 +20,16 @@ import (
 type LookupProtocolV1 struct {
 	ctx *Context
 }
+
 //在这个循环中不断执行nsqd服务的请求
 func (p *LookupProtocolV1) IOLoop(conn net.Conn) error {
 	var err error
 	var line string
 
-	client := NewClientV1(conn) //继承了conn
-	reader := bufio.NewReader(client)//将client封装成一个拥有size大小缓存的 bufio.Reader对象
-	for {//读取请求命令
-		line, err = reader.ReadString('\n')//持续的从tcp连接中读取数据包，直到遇到'\n'，也包括'\n'，功能同 ReadBytes，只不过返回的是字符串。内部有copy,ReadLine更快，没有copy.
+	client := NewClientV1(conn)       //继承了conn
+	reader := bufio.NewReader(client) //将client封装成一个拥有size大小缓存的 bufio.Reader对象
+	for {                             //读取请求命令
+		line, err = reader.ReadString('\n') //持续的从tcp连接中读取数据包，直到遇到'\n'，也包括'\n'，功能同 ReadBytes，只不过返回的是字符串。内部有copy,ReadLine更快，没有copy.
 		if err != nil {
 			break
 		}
@@ -47,7 +48,7 @@ func (p *LookupProtocolV1) IOLoop(conn net.Conn) error {
 			}
 			p.ctx.nsqlookupd.logf(LOG_ERROR, "[%s] - %s%s", client, err, ctx)
 
-			_, sendErr := protocol.SendResponse(client, []byte(err.Error()))//将错误信息发送给客户端
+			_, sendErr := protocol.SendResponse(client, []byte(err.Error())) //将错误信息发送给客户端
 			if sendErr != nil {
 				p.ctx.nsqlookupd.logf(LOG_ERROR, "[%s] - %s%s", client, sendErr, ctx)
 				break
@@ -89,15 +90,15 @@ func (p *LookupProtocolV1) IOLoop(conn net.Conn) error {
 //TODO 客户端新增或删除channel时，是否调用REGISTER UNREGISTER操作，待确认
 func (p *LookupProtocolV1) Exec(client *ClientV1, reader *bufio.Reader, params []string) ([]byte, error) {
 	switch params[0] {
-	case "PING":  //nsqd每隔15s都会向nsqlookupd发送心跳，表明自己还活着；
+	case "PING": //nsqd每隔15s都会向nsqlookupd发送心跳，表明自己还活着；
 		return p.PING(client, params)
 	case "IDENTIFY": //当nsqd第一次连接nsqlookupd时，发送IDENTITY，验证自己身份；
 		return p.IDENTIFY(client, reader, params[1:])
 	//nsqd是怎么告诉nsqlookupd,他有个新的topic创建的呢？ 这就得看 REGISTER操作了。
 	case "REGISTER": //当nsqd创建一个topic或者channel时，向nsqlookupd发送REGISTER请求，在nsqlookupd上更新当前nsqd的topic或者channel信息；
 		return p.REGISTER(client, reader, params[1:])
-	case "UNREGISTER"://当nsqd删除一个topic或者channel时，向nsqlookupd发送UNREGISTER请求，在nsqlookupd上更新当前nsqd的topic或者channel信息；
-	//具体各个命令怎么执行，这里就不去分析了；需要提一点是，nsqd的信息是保存在registration_db这样的实例里面的；
+	case "UNREGISTER": //当nsqd删除一个topic或者channel时，向nsqlookupd发送UNREGISTER请求，在nsqlookupd上更新当前nsqd的topic或者channel信息；
+		//具体各个命令怎么执行，这里就不去分析了；需要提一点是，nsqd的信息是保存在registration_db这样的实例里面的；
 		return p.UNREGISTER(client, reader, params[1:])
 	}
 	return nil, protocol.NewFatalClientErr(nil, "E_INVALID", fmt.Sprintf("invalid command %s", params[0]))
@@ -124,9 +125,10 @@ func getTopicChan(command string, params []string) (string, string, error) {
 
 	return topicName, channelName, nil
 }
+
 //通过http完成了AddRegistration后即完成了create tpoic或Create channel后，现在通过tcp执行REGISTER操作，注册信息
 func (p *LookupProtocolV1) REGISTER(client *ClientV1, reader *bufio.Reader, params []string) ([]byte, error) {
-	if client.peerInfo == nil {//必须先执行IDENTIFY操作
+	if client.peerInfo == nil { //必须先执行IDENTIFY操作，执行IDENTIFY操作时会填充client.peerInfo
 		return nil, protocol.NewFatalClientErr(nil, "E_INVALID", "client must IDENTIFY")
 	}
 	//nsqd新建了topic/channel后会发过来,此处读取nsqd发送过来的topic和channel,以备用来查询，
@@ -139,7 +141,7 @@ func (p *LookupProtocolV1) REGISTER(client *ClientV1, reader *bufio.Reader, para
 	//如果有channel，需要单独记录一下channel，因为topic和channel可以1:n的
 	if channel != "" {
 		key := Registration{"channel", topic, channel}
-		//把channel和producer关联起来。注意nsqd中的producer指的是nsqd
+		//把channel和producer关联起来。注意nsqd中的producer指的是nsqd，这里的client.peerInfo是什么时候被赋值的？在IDENTIFY命令中被赋值的
 		if p.ctx.nsqlookupd.DB.AddProducer(key, &Producer{peerInfo: client.peerInfo}) {
 			p.ctx.nsqlookupd.logf(LOG_INFO, "DB: client(%s) REGISTER category:%s key:%s subkey:%s",
 				client, "channel", topic, channel)
@@ -154,6 +156,7 @@ func (p *LookupProtocolV1) REGISTER(client *ClientV1, reader *bufio.Reader, para
 
 	return []byte("OK"), nil
 }
+
 //从注册表指定的topic或channel中移除producer, 为什么使用tcp方式的UNREGISTER命令完成？(因为tcp方式保持了客户端的信息)。
 //1.首先构建key
 //2.根据key去注册表中查询该key下的所有producers
@@ -206,12 +209,13 @@ func (p *LookupProtocolV1) UNREGISTER(client *ClientV1, reader *bufio.Reader, pa
 
 	return []byte("OK"), nil
 }
+
 //客户端初始化后，先进行IDENTIFY操作，验证身份，初始化peerInfo
 //IDENTIFY操作在四个操作中最先执行，且一个客户端只执行一次
 func (p *LookupProtocolV1) IDENTIFY(client *ClientV1, reader *bufio.Reader, params []string) ([]byte, error) {
 	var err error
 
-	if client.peerInfo != nil {//已经验证过身份了
+	if client.peerInfo != nil { //已经验证过身份了
 		return nil, protocol.NewFatalClientErr(err, "E_INVALID", "cannot IDENTIFY again")
 	}
 
@@ -228,8 +232,8 @@ func (p *LookupProtocolV1) IDENTIFY(client *ClientV1, reader *bufio.Reader, para
 	}
 
 	// body is a json structure with producer information
-	peerInfo := PeerInfo{id: client.RemoteAddr().String()}//将客户端的地址作为peerInfo的唯一标识符
-	err = json.Unmarshal(body, &peerInfo)
+	peerInfo := PeerInfo{id: client.RemoteAddr().String()} //将客户端的地址作为peerInfo的唯一标识符
+	err = json.Unmarshal(body, &peerInfo)                  //这个body在哪里被传入的?
 	if err != nil {
 		return nil, protocol.NewFatalClientErr(err, "E_BAD_BODY", "IDENTIFY failed to decode JSON body")
 	}
@@ -241,7 +245,7 @@ func (p *LookupProtocolV1) IDENTIFY(client *ClientV1, reader *bufio.Reader, para
 		return nil, protocol.NewFatalClientErr(nil, "E_BAD_BODY", "IDENTIFY missing fields")
 	}
 
-	atomic.StoreInt64(&peerInfo.lastUpdate, time.Now().UnixNano())//修改peerInfo的lastUpdate为当前时间，不理解为什么这样做
+	atomic.StoreInt64(&peerInfo.lastUpdate, time.Now().UnixNano()) //修改peerInfo的lastUpdate为当前时间，不理解为什么这样做
 
 	p.ctx.nsqlookupd.logf(LOG_INFO, "CLIENT(%s): IDENTIFY Address:%s TCP:%d HTTP:%d Version:%s",
 		client, peerInfo.BroadcastAddress, peerInfo.TCPPort, peerInfo.HTTPPort, peerInfo.Version)

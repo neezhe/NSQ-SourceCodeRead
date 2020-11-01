@@ -43,7 +43,7 @@ func newHTTPServer(ctx *context, tlsEnabled bool, tlsRequired bool) *httpServer 
 	//在标准库中创建一个处理器的唯一要求就是实现ServerHTTP函数，因为这个ServerHTTP函数是golang留给开发者的，让开发者自己决定怎么处理发来的请求，
 	//默认的多路复用器实现了ServerHTTP函数，所以他是一个处理器，只不过这个这个处理器里面添加了路径匹配，
 	//当然可以自己实现一个处理器不做路径匹配，那么所有请求的处理函数就不会因为路径不同而被执行不同的处理函数。
-	router := httprouter.New()//http标准库中的多路复用器有弊端，此处使用httprouter包定义的多路复用器，其优势是可以提取路由中的变量。
+	router := httprouter.New() //http标准库中的多路复用器有弊端，此处使用httprouter包定义的多路复用器，其优势是可以提取路由中的变量。
 	router.HandleMethodNotAllowed = true
 	router.PanicHandler = http_api.LogPanicHandler(ctx.nsqd.logf)
 	router.NotFound = http_api.LogNotFoundHandler(ctx.nsqd.logf)
@@ -60,15 +60,15 @@ func newHTTPServer(ctx *context, tlsEnabled bool, tlsRequired bool) *httpServer 
 
 	// v1 negotiate
 	router.Handle("POST", "/pub", http_api.Decorate(s.doPUB, http_api.V1))
-	router.Handle("POST", "/mpub", http_api.Decorate(s.doMPUB, http_api.V1)) //发布多个消息到话题
+	router.Handle("POST", "/mpub", http_api.Decorate(s.doMPUB, http_api.V1))       //发布多个消息到话题
 	router.Handle("GET", "/stats", http_api.Decorate(s.doStats, log, http_api.V1)) //检查综合运行
 
 	// only v1
 	router.Handle("POST", "/topic/create", http_api.Decorate(s.doCreateTopic, log, http_api.V1))
 	router.Handle("POST", "/topic/delete", http_api.Decorate(s.doDeleteTopic, log, http_api.V1))
-	router.Handle("POST", "/topic/empty", http_api.Decorate(s.doEmptyTopic, log, http_api.V1))//清空话题（topic)
-	router.Handle("POST", "/topic/pause", http_api.Decorate(s.doPauseTopic, log, http_api.V1))//暂停话题（topic)的消息流
-	router.Handle("POST", "/topic/unpause", http_api.Decorate(s.doPauseTopic, log, http_api.V1))//恢复话题（topic)的消息流
+	router.Handle("POST", "/topic/empty", http_api.Decorate(s.doEmptyTopic, log, http_api.V1))   //清空话题（topic)
+	router.Handle("POST", "/topic/pause", http_api.Decorate(s.doPauseTopic, log, http_api.V1))   //暂停话题（topic)的消息流
+	router.Handle("POST", "/topic/unpause", http_api.Decorate(s.doPauseTopic, log, http_api.V1)) //恢复话题（topic)的消息流
 	router.Handle("POST", "/channel/create", http_api.Decorate(s.doCreateChannel, log, http_api.V1))
 	router.Handle("POST", "/channel/delete", http_api.Decorate(s.doDeleteChannel, log, http_api.V1))
 	router.Handle("POST", "/channel/empty", http_api.Decorate(s.doEmptyChannel, log, http_api.V1))
@@ -82,10 +82,10 @@ func newHTTPServer(ctx *context, tlsEnabled bool, tlsRequired bool) *httpServer 
 	router.HandlerFunc("GET", "/debug/pprof/cmdline", pprof.Cmdline)
 	router.HandlerFunc("GET", "/debug/pprof/symbol", pprof.Symbol)
 	router.HandlerFunc("POST", "/debug/pprof/symbol", pprof.Symbol)
-	router.HandlerFunc("GET", "/debug/pprof/profile", pprof.Profile) // 生成 pprof CPU 配置文件
-	router.Handler("GET", "/debug/pprof/heap", pprof.Handler("heap")) //生成 pprof 堆配置文件
+	router.HandlerFunc("GET", "/debug/pprof/profile", pprof.Profile)            // 生成 pprof CPU 配置文件
+	router.Handler("GET", "/debug/pprof/heap", pprof.Handler("heap"))           //生成 pprof 堆配置文件
 	router.Handler("GET", "/debug/pprof/goroutine", pprof.Handler("goroutine")) //生成 pprof 计算配置文件
-	router.Handler("GET", "/debug/pprof/block", pprof.Handler("block")) //生成 pprof 块配置文件
+	router.Handler("GET", "/debug/pprof/block", pprof.Handler("block"))         //生成 pprof 块配置文件
 	router.Handle("PUT", "/debug/setblockrate", http_api.Decorate(setBlockRateHandler, log, http_api.PlainText))
 	router.Handler("GET", "/debug/pprof/threadcreate", pprof.Handler("threadcreate")) //生成 pprof OS 线程配置文件
 
@@ -100,6 +100,7 @@ func setBlockRateHandler(w http.ResponseWriter, req *http.Request, ps httprouter
 	runtime.SetBlockProfileRate(rate)
 	return nil, nil
 }
+
 //一个处理器就是一个拥有ServeHTTP的对象
 func (s *httpServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if !s.tlsEnabled && s.tlsRequired {
@@ -108,7 +109,7 @@ func (s *httpServer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("X-NSQ-Content-Type", "nsq; version=1.0")
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(403)
-		io.WriteString(w, resp)
+		io.WriteString(w, resp) //nolint
 		return
 	}
 	s.router.ServeHTTP(w, req) //这个就是路由对应真实处理函数了。
@@ -176,9 +177,9 @@ func (s *httpServer) getTopicFromQuery(req *http.Request) (url.Values, *Topic, e
 	if !ok {
 		return nil, nil, http_api.Err{400, "MISSING_ARG_TOPIC"}
 	}
-	topicName := topicNames[0]//因为ParseQuery解析出来的map中的value都是数组形式，就算只有一个值也是数组的形式，所以此处指明索引为0
+	topicName := topicNames[0] //因为ParseQuery解析出来的map中的value都是数组形式，就算只有一个值也是数组的形式，所以此处指明索引为0
 
-	if !protocol.IsValidTopicName(topicName) {//验证topic格式
+	if !protocol.IsValidTopicName(topicName) { //验证topic格式
 		return nil, nil, http_api.Err{400, "INVALID_TOPIC"}
 	}
 
@@ -189,7 +190,7 @@ func (s *httpServer) doPUB(w http.ResponseWriter, req *http.Request, ps httprout
 	// TODO: one day I'd really like to just error on chunked requests
 	// to be able to fail "too big" requests before we even read
 
-	if req.ContentLength > s.ctx.nsqd.getOpts().MaxMsgSize {  //发送消息的长度和配置设定的大小对比
+	if req.ContentLength > s.ctx.nsqd.getOpts().MaxMsgSize { //发送消息的长度和配置设定的大小对比
 		return nil, http_api.Err{413, "MSG_TOO_BIG"}
 	}
 

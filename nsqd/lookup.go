@@ -2,11 +2,12 @@ package nsqd
 
 import (
 	"bytes"
+	"encoding/json"
 	"net"
 	"os"
 	"strconv"
 	"time"
-	"encoding/json"
+
 	"github.com/nsqio/go-nsq"
 	"github.com/nsqio/nsq/internal/version"
 )
@@ -16,7 +17,7 @@ import (
 // 构建所有即将执行的REGISTER命令请求，最后依次执行每一个请求。
 func connectCallback(n *NSQD, hostname string) func(*lookupPeer) {
 	return func(lp *lookupPeer) {
-		// 1. 打包 nsqd 自己的信息，主要是与网络连接相关
+		// 1. 打包 nsqd 自己的信息，主要是与网络连接相关，这个传个nsqlookupd之后在IDENTIFY中被解析到了peerInfo结构体中
 		ci := make(map[string]interface{})
 		ci["version"] = version.Binary
 		ci["tcp_port"] = n.RealTCPAddr().Port
@@ -113,11 +114,11 @@ func (n *NSQD) lookupLoop() {
 				}
 				n.logf(LOG_INFO, "LOOKUP(%s): adding peer", host)
 				lookupPeer := newLookupPeer(host, n.getOpts().MaxBodySize, n.logf,
-					connectCallback(n, hostname)) //建立对应的网络连接的抽象实体(lookupPeer实例)
-				lookupPeer.Command(nil)           // 开始建立与lookupd的交互，nil代表连接初始建立，没用实际命令请求
+					connectCallback(n, hostname)) //建立对应的网络连接的抽象实体(lookupPeer结构体实例)
+				lookupPeer.Command(nil) //nolint 开始建立与lookupd的交互，nil代表连接初始建立，没用实际命令请求
 
-				lookupPeers = append(lookupPeers, lookupPeer)
-				lookupAddrs = append(lookupAddrs, host) // 更新 nsqlookupd 的连接实体和地址
+				lookupPeers = append(lookupPeers, lookupPeer) //一个nsqd可以连接多个lookupd,
+				lookupAddrs = append(lookupAddrs, host)       // 更新 nsqlookupd 的连接实体和地址
 			}
 			// 赋值给n.lookupPeers
 			n.lookupPeers.Store(lookupPeers)
@@ -147,7 +148,7 @@ func (n *NSQD) lookupLoop() {
 				// notify all nsqlookupds that a new channel exists, or that it's removed
 				branch = "channel"
 				channel := val.(*Channel)
-				if channel.Exiting() == true { // 若 channel 已退出，即 channel被 Delete，则构造 UNREGISTER 命令请求
+				if channel.Exiting() { // 若 channel 已退出，即 channel被 Delete，则构造 UNREGISTER 命令请求
 					cmd = nsq.UnRegister(channel.topicName, channel.name)
 				} else { // 否则表明 channel 是新创建的，则构造 REGISTER 命令请求
 					cmd = nsq.Register(channel.topicName, channel.name)
@@ -156,7 +157,7 @@ func (n *NSQD) lookupLoop() {
 				// notify all nsqlookupds that a new topic exists, or that it's removed
 				branch = "topic"
 				topic := val.(*Topic)
-				if topic.Exiting() == true {
+				if topic.Exiting() {
 					cmd = nsq.UnRegister(topic.name, "")
 				} else {
 					cmd = nsq.Register(topic.name, "")
@@ -202,6 +203,7 @@ func in(s string, lst []string) bool {
 	}
 	return false
 }
+
 // nsqlookupd服务的HTTP地址
 func (n *NSQD) lookupdHTTPAddrs() []string {
 	var lookupHTTPAddrs []string

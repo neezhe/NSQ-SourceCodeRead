@@ -10,10 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nsqio/go-diskqueue"
 	"github.com/nsqio/nsq/internal/lg"
 	"github.com/nsqio/nsq/internal/pqueue"
 	"github.com/nsqio/nsq/internal/quantile"
-	"github.com/nsqio/go-diskqueue"
 )
 
 type Consumer interface {
@@ -37,27 +37,27 @@ type Consumer interface {
 type Channel struct { //nsqd的channel是最接近消费者端的，有他特有的东西，包括投递，确认等；
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
 	requeueCount uint64 // 需要重新排队的消息数
-	messageCount uint64// 接收到的消息的总数
+	messageCount uint64 // 接收到的消息的总数
 	timeoutCount uint64 // 正在发送的消息的数量
 
 	sync.RWMutex
 
-	topicName string// 其所属的 topic 名称
-	name      string // channel 名称
-	ctx       *context// 存放nsqd 实例
+	topicName string   // 其所属的 topic 名称
+	name      string   // channel 名称
+	ctx       *context // 存放nsqd 实例
 
 	backend BackendQueue //磁盘持久化存储队列
 	//注意此处的Message结构，和Topic中的一样。代表生产者或者消费者的一条消息。是nsq消息队列系统中最基本的元素。
-	memoryMsgChan chan *Message//channel的消息管道，topic发送消息会放入这里面，所有SUB的客户端会用后台协程订阅到这个管道后面, 1:n
+	memoryMsgChan chan *Message //channel的消息管道，topic发送消息会放入这里面，所有SUB的客户端会用后台协程订阅到这个管道后面, 1:n
 
-	exitFlag      int32 // 退出标识（同 topic 的 exitFlag 作用类似）
-	exitMutex     sync.RWMutex
+	exitFlag  int32 // 退出标识（同 topic 的 exitFlag 作用类似）
+	exitMutex sync.RWMutex
 
 	// state tracking
 	clients        map[int64]Consumer //与此 channel关联的client集合，即订阅的Consumer集合所有订阅的topic都会记录到这里。也可以用来在关闭的时候清理client，以及根据clientid找client。
-	paused         int32 // 若paused属性被设置，则那些订阅了此channel的客户端不会被推送消息
-	ephemeral      bool // 标记此 channel 是否是临时的
-	deleteCallback func(*Channel)//实际上就是DeleteExistingChannel，删除回调函数（同 topic 的 deleteCallback 作用类似）
+	paused         int32              // 若paused属性被设置，则那些订阅了此channel的客户端不会被推送消息
+	ephemeral      bool               // 标记此 channel 是否是临时的
+	deleteCallback func(*Channel)     //实际上就是DeleteExistingChannel，删除回调函数（同 topic 的 deleteCallback 作用类似）
 	deleter        sync.Once
 
 	// Stats tracking
@@ -71,7 +71,7 @@ type Channel struct { //nsqd的channel是最接近消费者端的，有他特有
 	//正在发送中的消息记录，直到收到客户端的FIN才会删除，否则timeout到来会重传消息的.
 	//这里应用层有个坑，如果程序处理延迟了，那么可能重复投递，那怎么办,应用层得注意这个，设置了timeout就得接受有重传的存在，（因此client需要对消息做去重处理 de-duplicate）
 	inFlightMessages map[MessageID]*Message //已经发送给client但是没有得到client确认的消息,叫inFlightMessages。
-	inFlightPQ       inFlightPqueue//代表正在发送的消息集合，同样是最小堆优先级队列，优先级比较字段也为消息发送时间(Message.pri)。
+	inFlightPQ       inFlightPqueue         //代表正在发送的消息集合，同样是最小堆优先级队列，优先级比较字段也为消息发送时间(Message.pri)。
 	inFlightMutex    sync.Mutex
 }
 
@@ -99,7 +99,7 @@ func NewChannel(topicName string, channelName string, ctx *context,
 		)
 	}
 
-	c.initPQ()// 初始化 channel 维护的两个消息队列
+	c.initPQ() // 初始化 channel 维护的两个消息队列
 
 	if strings.HasSuffix(channelName, "#ephemeral") {
 		// 3. 同　topic　类似，那些 ephemeral 类型的 channel 不会关联到一个 BackendQueue，
@@ -127,7 +127,7 @@ func NewChannel(topicName string, channelName string, ctx *context,
 		)
 	}
 
-	c.ctx.nsqd.Notify(c)// 5. 通知 lookupd 添加注册信息
+	c.ctx.nsqd.Notify(c) // 5. 通知 lookupd 添加注册信息
 
 	return c
 }
@@ -150,17 +150,18 @@ func (c *Channel) initPQ() {
 func (c *Channel) Exiting() bool {
 	return atomic.LoadInt32(&c.exitFlag) == 1
 }
+
 //删除和关闭channel的方法与topic中的类似，但有两个不同点：
 // 其一，无论是关闭还是删除channel都会显式地将订阅了此channel的客户端强制关闭（当然是关闭客户端在服务端的实体）；
 // 其二，关闭和删除channel都会显式刷新channel，即将channel所维护的三个消息队列：
 // 内存消息队列memoryMsgChan、正在发送的优先级消息队列inFlightPQ以及被推迟发送的优先级消息队列deferredPQ，将它们的消息显式写入到持久化存储消息队列。
 // Delete empties the channel and closes
-func (c *Channel) Delete() error {// 删除此 channel，清空所有消息，然后关闭
+func (c *Channel) Delete() error { // 删除此 channel，清空所有消息，然后关闭
 	return c.exit(true)
 }
 
 // Close cleanly closes the Channel
-func (c *Channel) Close() error {// 只是将三个消息队列中的消息刷盘，然后关闭
+func (c *Channel) Close() error { // 只是将三个消息队列中的消息刷盘，然后关闭
 	return c.exit(false)
 }
 
@@ -168,11 +169,11 @@ func (c *Channel) exit(deleted bool) error {
 	c.exitMutex.Lock()
 	defer c.exitMutex.Unlock()
 
-	if !atomic.CompareAndSwapInt32(&c.exitFlag, 0, 1) {// 1. 保证还未被设置 exitFlag，即还在运行中，同时设置 exitFlag
+	if !atomic.CompareAndSwapInt32(&c.exitFlag, 0, 1) { // 1. 保证还未被设置 exitFlag，即还在运行中，同时设置 exitFlag
 		return errors.New("exiting")
 	}
 
-	if deleted {// 2. 若需要删除数据，则通知 nsqlookupd，有 channel 被删除
+	if deleted { // 2. 若需要删除数据，则通知 nsqlookupd，有 channel 被删除
 		c.ctx.nsqd.logf(LOG_INFO, "CHANNEL(%s): deleting", c.name)
 
 		// since we are explicitly deleting a channel (not just at system exit time)
@@ -190,22 +191,23 @@ func (c *Channel) exit(deleted bool) error {
 	}
 	c.RUnlock()
 
-	if deleted {// 4. 清空此 channel 所维护的内存消息队列和持久化存储消息队列中的消息
+	if deleted { // 4. 清空此 channel 所维护的内存消息队列和持久化存储消息队列中的消息
 		// empty the queue (deletes the backend files, too)
 		c.Empty()
 		return c.backend.Delete() // 5. 删除持久化存储消息队列中的消息
 	}
 
 	// write anything leftover to disk
-	c.flush()// 6. 强制将内存消息队列、以及两个发送消息优先级队列中的消息写到持久化存储中
+	c.flush()                // 6. 强制将内存消息队列、以及两个发送消息优先级队列中的消息写到持久化存储中
 	return c.backend.Close() // 7. 关闭持久化存储消息队列
 }
+
 // 清空 channel 的消息
 func (c *Channel) Empty() error {
 	c.Lock()
 	defer c.Unlock()
 
-	c.initPQ()// 1. 重新初始化（清空） in-flight queue 及 deferred queue
+	c.initPQ() // 1. 重新初始化（清空） in-flight queue 及 deferred queue
 	// 2. 清空由 channel 为客户端维护的一些信息，比如 当前正在发送的消息的数量 InFlightCount
 	// 同时更新了 ReadyStateChan
 	for _, client := range c.clients {
@@ -321,6 +323,7 @@ func (c *Channel) PutMessage(m *Message) error {
 	atomic.AddUint64(&c.messageCount, 1) //更新消息计数
 	return nil
 }
+
 //channel发送消息也很简单
 //channel的putmessage，还是老办法，将消息放入channel.memoryMsgChan里面，
 //或者放到后台持久化里面，如果客户端来不及接受的话, 那就存入文件
@@ -346,11 +349,12 @@ func (c *Channel) put(m *Message) error {
 	}
 	return nil
 }
+
 //延迟投递消息
 func (c *Channel) PutMessageDeferred(msg *Message, timeout time.Duration) {
 	//延迟投递消息，也算一个messageCount。 参数timeout是延迟秒数
-	atomic.AddUint64(&c.messageCount, 1)//更新消息计数
-	c.StartDeferredTimeout(msg, timeout) //将 message 添加到 deferred queue 中
+	atomic.AddUint64(&c.messageCount, 1) //更新消息计数
+	c.StartDeferredTimeout(msg, timeout) //nolint将 message 添加到 deferred queue 中
 }
 
 // TouchMessage resets the timeout for an in-flight message
@@ -465,6 +469,7 @@ func (c *Channel) RemoveClient(clientID int64) {
 		go c.deleter.Do(func() { c.deleteCallback(c) })
 	}
 }
+
 //nsqd对于消息的确认到达，是通过消费者发送FIN+msgid来实现的，可想而知，他需要一个队列记录：当前正在发送，待确认的消息列表，类似窗口协议，性能差点可能，这就是：InFlightQueue 。
 //发送客户端消息的时候，会调用StartInFlightTimeout来记录当前的infight消息，以备进行重传。如果客户端收到消息，会发送FIN命令来结束消息倒计时，不用重传了。简单看看StartInFlightTimeout代码。
 //这个函数会在客户端的protocolV2) messagePump 循环体里面，当某个客户端连接得到内存或者磁盘消息后，在发送前会设置这个inflight队列，
@@ -475,21 +480,22 @@ func (c *Channel) StartInFlightTimeout(msg *Message, clientID int64, timeout tim
 	now := time.Now()
 	msg.clientID = clientID
 	msg.deliveryTS = now
-	msg.pri = now.Add(timeout).UnixNano()//初始化消息的过期时间为timeout+now,pri是优先级的缩写，此处就是按照过期的优先级进行堆排序存放的。
-	err := c.pushInFlightMessage(msg)//放到缓存, 按msg.ID, 记录一下, 估计方便之后查找: c.inFlightMessages[msg.ID]
+	msg.pri = now.Add(timeout).UnixNano() //初始化消息的过期时间为timeout+now,pri是优先级的缩写，此处就是按照过期的优先级进行堆排序存放的。
+	err := c.pushInFlightMessage(msg)     //放到缓存, 按msg.ID, 记录一下, 估计方便之后查找: c.inFlightMessages[msg.ID]
 	if err != nil {
 		return err
 	}
 	//这个msg消息已经通过msg.pri = now.Add(timeout).UnixNano()，加了一个超时时间，然后才被压入InFlightPQ
-	c.addToInFlightPQ(msg)//将msg加入到InFlight队列中，InFlight其实是一个堆排序队列，优先级是按照超时时间来排序的，越靠近过期时间，将会越靠前
+	c.addToInFlightPQ(msg) //将msg加入到InFlight队列中，InFlight其实是一个堆排序队列，优先级是按照超时时间来排序的，越靠近过期时间，将会越靠前
 	return nil
 }
+
 //可以看到，对于延迟投递的消息最后就是用消息到达的时间戳来当优先级值，放入优先级队列。
 //放入到优先级队列里面. 那么这条消息怎么触发呢？ 在main函数里面，会启动queueScanLoop协程，后者会定时启动扫描任务扫描所有channels,
 // 然后去处理这个优先级队列，调用processDeferredQueue 函数，如果有到期的消息就触发他；
 func (c *Channel) StartDeferredTimeout(msg *Message, timeout time.Duration) error {
 	//延迟投递消息，计算绝对时间absTs, 然后新建一个pqueue.Item放到优先级队列里面，优先级就是absTs，按照时间顺序排列
-	absTs := time.Now().Add(timeout).UnixNano() // 1. 计算超时超时戳，作为 Priority
+	absTs := time.Now().Add(timeout).UnixNano()       // 1. 计算超时超时戳，作为 Priority
 	item := &pqueue.Item{Value: msg, Priority: absTs} // 2. 构造 item
 	//下面就是记录一下deferredMessages[id] = item，防止重复延迟投递
 	err := c.pushDeferredMessage(item) // 3. item 添加到 deferred 字典
@@ -579,6 +585,7 @@ func (c *Channel) addToDeferredPQ(item *pqueue.Item) {
 	heap.Push(&c.deferredPQ, item)
 	c.deferredMutex.Unlock()
 }
+
 //主要逻辑就是从优先级队列里面循环读取已到期的消息，然后将其重新调用put函数发送出去，跟客户端PUB是一个效果：
 func (c *Channel) processDeferredQueue(t int64) bool {
 	c.exitMutex.RLock()
@@ -617,6 +624,7 @@ func (c *Channel) processDeferredQueue(t int64) bool {
 exit:
 	return dirty
 }
+
 ///把 InFlightQueue里,优先级小于参数t的,全部重新发送
 func (c *Channel) processInFlightQueue(t int64) bool {
 	c.exitMutex.RLock() // 先检查是否已经退出
@@ -634,7 +642,7 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 		msg, _ := c.inFlightPQ.PeekAndShift(t) // 从队列中获取已经过期的消息
 		c.inFlightMutex.Unlock()
 
-		if msg == nil {//如果没有取到消息，即大于参数，那么就返回，仍然保持dirty := false
+		if msg == nil { //如果没有取到消息，即大于参数，那么就返回，仍然保持dirty := false
 			goto exit
 		}
 		dirty = true
@@ -650,7 +658,7 @@ func (c *Channel) processInFlightQueue(t int64) bool {
 		if ok {
 			client.TimedOutMessage()
 		}
-		c.put(msg)// 消息在channel中发起重新投递，重新塞入原始发送队列: channel.memoryMsgChan <- m
+		c.put(msg) //nolint 消息在channel中发起重新投递，重新塞入原始发送队列: channel.memoryMsgChan <- m
 	}
 
 exit:

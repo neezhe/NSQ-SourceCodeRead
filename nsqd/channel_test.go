@@ -26,7 +26,7 @@ func TestPutMessage(t *testing.T) {
 
 	var id MessageID
 	msg := NewMessage(id, []byte("test"))
-	topic.PutMessage(msg)
+	topic.PutMessage(msg) //nolint
 
 	outputMsg := <-channel1.memoryMsgChan
 	test.Equal(t, msg.ID, outputMsg.ID)
@@ -48,7 +48,7 @@ func TestPutMessage2Chan(t *testing.T) {
 
 	var id MessageID
 	msg := NewMessage(id, []byte("test"))
-	topic.PutMessage(msg)
+	topic.PutMessage(msg) //nolint
 
 	outputMsg1 := <-channel1.memoryMsgChan
 	test.Equal(t, msg.ID, outputMsg1.ID)
@@ -76,7 +76,7 @@ func TestInFlightWorker(t *testing.T) {
 
 	for i := 0; i < count; i++ {
 		msg := NewMessage(topic.GenerateID(), []byte("test"))
-		channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout)
+		channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout) //nolint
 	}
 
 	channel.Lock()
@@ -118,11 +118,11 @@ func TestChannelEmpty(t *testing.T) {
 	msgs := make([]*Message, 0, 25)
 	for i := 0; i < 25; i++ {
 		msg := NewMessage(topic.GenerateID(), []byte("test"))
-		channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout)
+		channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout) //nolint
 		msgs = append(msgs, msg)
 	}
 
-	channel.RequeueMessage(0, msgs[len(msgs)-1].ID, 100*time.Millisecond)
+	channel.RequeueMessage(0, msgs[len(msgs)-1].ID, 100*time.Millisecond) //nolint
 	test.Equal(t, 24, len(channel.inFlightMessages))
 	test.Equal(t, 24, len(channel.inFlightPQ))
 	test.Equal(t, 1, len(channel.deferredMessages))
@@ -157,7 +157,7 @@ func TestChannelEmptyConsumer(t *testing.T) {
 
 	for i := 0; i < 25; i++ {
 		msg := NewMessage(topic.GenerateID(), []byte("test"))
-		channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout)
+		channel.StartInFlightTimeout(msg, 0, opts.MsgTimeout) //nolint
 		client.SendingMessage()
 	}
 

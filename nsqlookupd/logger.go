@@ -1,7 +1,7 @@
 package nsqlookupd
 
 import (
-	"github.com/nsqio/nsq/internal/lg"
+	"nsq/internal/lg"
 )
 
 type Logger lg.Logger

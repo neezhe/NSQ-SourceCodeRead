@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/nsqio/nsq/internal/lg"
+	"nsq/internal/lg"
 )
 
 type logWriter struct {
@@ -18,6 +18,7 @@ func (l logWriter) Write(p []byte) (int, error) {
 	l.logf(lg.WARN, "%s", string(p))
 	return len(p), nil
 }
+
 //看过golang的http模块，应该知道http模块最重要的就是http.Handler(处理器)，就是下面的第二个参数，它可以提供路由查找和函数执行功能。
 func Serve(listener net.Listener, handler http.Handler, proto string, logf lg.AppLogFunc) error {
 	logf(lg.INFO, "%s: listening on %s", proto, listener.Addr())

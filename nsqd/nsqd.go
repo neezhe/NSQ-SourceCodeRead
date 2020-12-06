@@ -17,13 +17,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nsqio/nsq/internal/clusterinfo"
-	"github.com/nsqio/nsq/internal/dirlock"
-	"github.com/nsqio/nsq/internal/http_api"
-	"github.com/nsqio/nsq/internal/protocol"
-	"github.com/nsqio/nsq/internal/statsd"
-	"github.com/nsqio/nsq/internal/util"
-	"github.com/nsqio/nsq/internal/version"
+	"nsq/internal/clusterinfo"
+	"nsq/internal/dirlock"
+	"nsq/internal/http_api"
+	"nsq/internal/protocol"
+	"nsq/internal/statsd"
+	"nsq/internal/util"
+	"nsq/internal/version"
 )
 
 const (
@@ -463,7 +463,7 @@ func (n *NSQD) Exit() {
 
 	n.logf(LOG_INFO, "NSQ: stopping subsystems")
 	close(n.exitChan)
-	n.waitGroup.Wait()   //此处等待所有都退出
+	n.waitGroup.Wait() //此处等待所有都退出
 	n.dl.Unlock()
 	n.logf(LOG_INFO, "NSQ: bye")
 }

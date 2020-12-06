@@ -6,14 +6,15 @@ import (
 	"net/http/pprof"
 	"sync/atomic"
 
+	"nsq/internal/http_api"
+	"nsq/internal/protocol"
+	"nsq/internal/version"
+
 	"github.com/julienschmidt/httprouter"
-	"github.com/nsqio/nsq/internal/http_api"
-	"github.com/nsqio/nsq/internal/protocol"
-	"github.com/nsqio/nsq/internal/version"
-	)
+)
 
 type httpServer struct {
-	ctx    *Context   //用于传递nsqlookupd地址
+	ctx    *Context     //用于传递nsqlookupd地址
 	router http.Handler //httprouter实例，用于定义路由以及提供路由查找入口
 }
 
@@ -34,24 +35,24 @@ func newHTTPServer(ctx *Context) *httpServer {
 	}
 	//Decorate是个装饰器，第一个参数为需要被装饰的视图函数，从第二参数开始，都是装饰函数，最后返回装饰好的视图函数
 	router.Handle("GET", "/ping", http_api.Decorate(s.pingHandler, log, http_api.PlainText)) //心跳检测，返回OK
-	router.Handle("GET", "/info", http_api.Decorate(s.doInfo, log, http_api.V1)) //获取版本信息
+	router.Handle("GET", "/info", http_api.Decorate(s.doInfo, log, http_api.V1))             //获取版本信息
 
 	// v1 negotiate
 	router.Handle("GET", "/debug", http_api.Decorate(s.doDebug, log, http_api.V1))
-	router.Handle("GET", "/lookup", http_api.Decorate(s.doLookup, log, http_api.V1)) //返回某个topic下所有的producers
-	router.Handle("GET", "/topics", http_api.Decorate(s.doTopics, log, http_api.V1)) //获取所有的topic
+	router.Handle("GET", "/lookup", http_api.Decorate(s.doLookup, log, http_api.V1))     //返回某个topic下所有的producers
+	router.Handle("GET", "/topics", http_api.Decorate(s.doTopics, log, http_api.V1))     //获取所有的topic
 	router.Handle("GET", "/channels", http_api.Decorate(s.doChannels, log, http_api.V1)) //获取所有的channels
-	router.Handle("GET", "/nodes", http_api.Decorate(s.doNodes, log, http_api.V1)) //获取所有的节点
+	router.Handle("GET", "/nodes", http_api.Decorate(s.doNodes, log, http_api.V1))       //获取所有的节点
 
 	// only v1
 	//在创建channel的时候和创建topic的时候不一样，
-//channel注册的时候注册了两部分内容:
-//	1.根据channel构建一个key，注册channel和Producers的映射
-//	2. 再根据channel对应的topic构建一个key, 注册topic和Producers的映射
-	router.Handle("POST", "/topic/create", http_api.Decorate(s.doCreateTopic, log, http_api.V1))//创建topic， 这里只是创建topic而不会添加该topic的producer
-	router.Handle("POST", "/topic/delete", http_api.Decorate(s.doDeleteTopic, log, http_api.V1)) //删除topic
+	//channel注册的时候注册了两部分内容:
+	//	1.根据channel构建一个key，注册channel和Producers的映射
+	//	2. 再根据channel对应的topic构建一个key, 注册topic和Producers的映射
+	router.Handle("POST", "/topic/create", http_api.Decorate(s.doCreateTopic, log, http_api.V1))     //创建topic， 这里只是创建topic而不会添加该topic的producer
+	router.Handle("POST", "/topic/delete", http_api.Decorate(s.doDeleteTopic, log, http_api.V1))     //删除topic
 	router.Handle("POST", "/channel/create", http_api.Decorate(s.doCreateChannel, log, http_api.V1)) //创建channel, 也不会添加producer
-	router.Handle("POST", "/channel/delete", http_api.Decorate(s.doDeleteChannel, log, http_api.V1))//删除channel
+	router.Handle("POST", "/channel/delete", http_api.Decorate(s.doDeleteChannel, log, http_api.V1)) //删除channel
 	router.Handle("POST", "/topic/tombstone", http_api.Decorate(s.doTombstoneTopicProducer, log, http_api.V1))
 
 	// debug
@@ -83,6 +84,7 @@ func (s *httpServer) doInfo(w http.ResponseWriter, req *http.Request, ps httprou
 		Version: version.Binary,
 	}, nil
 }
+
 //获取所有topic
 func (s *httpServer) doTopics(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	//获取所有topic的名称
@@ -91,6 +93,7 @@ func (s *httpServer) doTopics(w http.ResponseWriter, req *http.Request, ps httpr
 		"topics": topics,
 	}, nil
 }
+
 //获取指定topic下的所有channel
 func (s *httpServer) doChannels(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
@@ -108,6 +111,7 @@ func (s *httpServer) doChannels(w http.ResponseWriter, req *http.Request, ps htt
 		"channels": channels,
 	}, nil
 }
+
 //当完成了create topic/channel，完成了消费者register后，就开始下面lookup了
 //获取指定topic下的所有有效producer
 //当消费者需要查询某个topic在哪些nsqd上时，可以发送/lookup 的http命令查询，nsqlookupd的查询topic信息的接口是这样的：curl 'http://127.0.0.1:4161/lookup?topic=testtopic'
@@ -129,7 +133,7 @@ func (s *httpServer) doLookup(w http.ResponseWriter, req *http.Request, ps httpr
 	fmt.Println("=====doLookup======")
 	// 1. 根据Topic名称，看看是否已经注册了。如果没有注册抛出异常
 	registration := s.ctx.nsqlookupd.DB.FindRegistrations("topic", topicName, "")
-	if len(registration) == 0 {//topic不存在
+	if len(registration) == 0 { //topic不存在
 		return nil, http_api.Err{404, "TOPIC_NOT_FOUND"}
 	}
 	// 2. 将topic下的所有channel获取出来。*表示取出所有
@@ -137,7 +141,7 @@ func (s *httpServer) doLookup(w http.ResponseWriter, req *http.Request, ps httpr
 	// 3. 获取该topic下的所有producers
 	producers := s.ctx.nsqlookupd.DB.FindProducers("topic", topicName, "")
 	//去掉不活跃的producer机器
-	fmt.Println("====================",producers)
+	fmt.Println("====================", producers)
 	producers = producers.FilterByActive(s.ctx.nsqlookupd.opts.InactiveProducerTimeout,
 		s.ctx.nsqlookupd.opts.TombstoneLifetime)
 	return map[string]interface{}{
@@ -145,6 +149,7 @@ func (s *httpServer) doLookup(w http.ResponseWriter, req *http.Request, ps httpr
 		"producers": producers.PeerInfo(),
 	}, nil
 }
+
 //在lookupd上增加了一条topic的记录，并且他的producers为空
 func (s *httpServer) doCreateTopic(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	//创建一个topic， 只是简单的记录了一下topic信息，并且加到DB里面，对应的nsqd数组为空
@@ -158,7 +163,7 @@ func (s *httpServer) doCreateTopic(w http.ResponseWriter, req *http.Request, ps 
 		return nil, http_api.Err{400, "MISSING_ARG_TOPIC"}
 	}
 
-	if !protocol.IsValidTopicName(topicName) {//验证topic名称是否合法
+	if !protocol.IsValidTopicName(topicName) { //验证topic名称是否合法
 		return nil, http_api.Err{400, "INVALID_ARG_TOPIC"}
 	}
 
@@ -168,6 +173,7 @@ func (s *httpServer) doCreateTopic(w http.ResponseWriter, req *http.Request, ps 
 
 	return nil, nil
 }
+
 //topic底下有多个channel，所有topic的删除首先需要删除channel，然后再删除topic
 func (s *httpServer) doDeleteTopic(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
@@ -194,6 +200,7 @@ func (s *httpServer) doDeleteTopic(w http.ResponseWriter, req *http.Request, ps 
 
 	return nil, nil
 }
+
 //逻辑删除指定topic的一个节点(producer)
 func (s *httpServer) doTombstoneTopicProducer(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
@@ -212,16 +219,17 @@ func (s *httpServer) doTombstoneTopicProducer(w http.ResponseWriter, req *http.R
 	}
 
 	s.ctx.nsqlookupd.logf(LOG_INFO, "DB: setting tombstone for producer@%s of topic(%s)", node, topicName)
-	producers := s.ctx.nsqlookupd.DB.FindProducers("topic", topicName, "")//根据topic查producer
+	producers := s.ctx.nsqlookupd.DB.FindProducers("topic", topicName, "") //根据topic查producer
 	for _, p := range producers {
 		thisNode := fmt.Sprintf("%s:%d", p.peerInfo.BroadcastAddress, p.peerInfo.HTTPPort)
-		if thisNode == node {//逻辑删除
+		if thisNode == node { //逻辑删除
 			p.Tombstone()
 		}
 	}
 
 	return nil, nil
 }
+
 //创建topic和channel
 func (s *httpServer) doCreateChannel(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
@@ -244,6 +252,7 @@ func (s *httpServer) doCreateChannel(w http.ResponseWriter, req *http.Request, p
 
 	return nil, nil
 }
+
 //删除已有topic下的一个channel
 func (s *httpServer) doDeleteChannel(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	reqParams, err := http_api.NewReqParams(req)
@@ -268,6 +277,7 @@ func (s *httpServer) doDeleteChannel(w http.ResponseWriter, req *http.Request, p
 
 	return nil, nil
 }
+
 //定义节点信息(producer (nsqd))
 type node struct {
 	RemoteAddress    string   `json:"remote_address"`
@@ -279,6 +289,7 @@ type node struct {
 	Tombstones       []bool   `json:"tombstones"`
 	Topics           []string `json:"topics"`
 }
+
 //获取所有已知节点(nsqd)
 func (s *httpServer) doNodes(w http.ResponseWriter, req *http.Request, ps httprouter.Params) (interface{}, error) {
 	// dont filter out tombstoned nodes

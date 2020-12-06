@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/nsqio/nsq/internal/lg"
-	)
+	"nsq/internal/lg"
+)
 
 type Options struct {
 	//这些tag是会被用在解析的时候用到，flag表示这个参数可以从命令行进行配置，cfg表示这个参数可以从配置文件进行配置。

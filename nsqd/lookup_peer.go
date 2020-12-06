@@ -7,8 +7,9 @@ import (
 	"net"
 	"time"
 
+	"nsq/internal/lg"
+
 	"github.com/nsqio/go-nsq"
-	"github.com/nsqio/nsq/internal/lg"
 )
 
 // lookupPeer is a low-level type for connecting/reading/writing to nsqlookupd
@@ -20,12 +21,12 @@ import (
 // lookupPeer 实例被设计成延迟连接到 nsqlookupd，并且会自动重连
 type lookupPeer struct {
 	logf            lg.AppLogFunc
-	addr            string // 需要连接到对端的地址信息，即为 nsqlookupd 的地址
-	conn            net.Conn// 网络连接
-	state           int32 // 当前 lookupPeer 连接的状态 5 种状态之一
+	addr            string            // 需要连接到对端的地址信息，即为 nsqlookupd 的地址
+	conn            net.Conn          // 网络连接
+	state           int32             // 当前 lookupPeer 连接的状态 5 种状态之一
 	connectCallback func(*lookupPeer) // 成功连接到指定的地址后的回调函数
-	maxBodySize     int64 // 在读取命令请求的处理返回结果时，消息体的最大字节数
-	Info            peerInfo //上面的都是nsqd这边的信息，此处peerInfo就是identify之后lookupd返回的信息。
+	maxBodySize     int64             // 在读取命令请求的处理返回结果时，消息体的最大字节数
+	Info            peerInfo          //上面的都是nsqd这边的信息，此处peerInfo就是identify之后lookupd返回的信息。
 }
 
 // peerInfo contains metadata for a lookupPeer instance (and is JSON marshalable)
@@ -104,14 +105,14 @@ func (lp *lookupPeer) Command(cmd *nsq.Command) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		lp.state = stateConnected // 3. 更新对应的连接状态
+		lp.state = stateConnected      // 3. 更新对应的连接状态
 		_, err = lp.Write(nsq.MagicV1) // 4. 在发送正式的命令请求前，需要要先发送一个 4byte 的序列号，用于指定后面用于通信的协议版本。
 		if err != nil {
 			lp.Close()
 			return nil, err
 		}
-		if initialState == stateDisconnected {// 5. 在连接成功后，需要执行一个成功连接的回调函数（在正式发送命令请求之前）
-			lp.connectCallback(lp)//此回调函数的主要逻辑为nsqd向nsqlookupd发送一个IDENTIFY命令请求以表明自己身份信息，然后遍历自己所维护的topicMap集合，构建所有即将执行的REGISTER命令请求，最后依次执行每一个请求
+		if initialState == stateDisconnected { // 5. 在连接成功后，需要执行一个成功连接的回调函数（在正式发送命令请求之前）
+			lp.connectCallback(lp) //此回调函数的主要逻辑为nsqd向nsqlookupd发送一个IDENTIFY命令请求以表明自己身份信息，然后遍历自己所维护的topicMap集合，构建所有即将执行的REGISTER命令请求，最后依次执行每一个请求
 		}
 		if lp.state != stateConnected {
 			return nil, fmt.Errorf("lookupPeer connectCallback() failed")

@@ -11,11 +11,12 @@ import (
 	"syscall"
 	"time"
 
+	"nsq/internal/app"
+	"nsq/internal/lg"
+	"nsq/internal/version"
+
 	"github.com/mreiferson/go-options"
 	"github.com/nsqio/go-nsq"
-	"github.com/nsqio/nsq/internal/app"
-	"github.com/nsqio/nsq/internal/lg"
-	"github.com/nsqio/nsq/internal/version"
 )
 
 func hasArg(s string) bool {
@@ -141,6 +142,6 @@ func main() {
 	signal.Notify(hupChan, syscall.SIGHUP)
 	signal.Notify(termChan, syscall.SIGINT, syscall.SIGTERM)
 
-	discoverer := newTopicDiscoverer(logf, opts, cfg, hupChan, termChan)  // 开始消费消息, 写出文件
+	discoverer := newTopicDiscoverer(logf, opts, cfg, hupChan, termChan) // 开始消费消息, 写出文件
 	discoverer.run()
 }

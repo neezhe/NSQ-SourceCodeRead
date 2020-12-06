@@ -6,8 +6,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/nsqio/nsq/internal/statsd"
-	"github.com/nsqio/nsq/internal/writers"
+	"nsq/internal/statsd"
+	"nsq/internal/writers"
 )
 
 type Uint64Slice []uint64
@@ -23,6 +23,7 @@ func (s Uint64Slice) Swap(i, j int) {
 func (s Uint64Slice) Less(i, j int) bool {
 	return s[i] < s[j]
 }
+
 //通过UDP来定期推送数据(消息的统计, 内存消耗等)给statsd_address(配置的地址),可以使用Graphite+Grafana搭建更强大的监控
 func (n *NSQD) statsdLoop() {
 	var lastMemStats memStats
@@ -42,7 +43,7 @@ func (n *NSQD) statsdLoop() {
 				continue
 			}
 			sw := writers.NewSpreadWriter(conn, interval-time.Second, n.exitChan)
-			bw := writers.NewBoundaryBufferedWriter(sw, n.getOpts().StatsdUDPPacketSize)  // StatsdUDPPacketSize: 508
+			bw := writers.NewBoundaryBufferedWriter(sw, n.getOpts().StatsdUDPPacketSize) // StatsdUDPPacketSize: 508
 			client := statsd.NewClient(bw, prefix)
 
 			n.logf(LOG_INFO, "STATSD: pushing stats to %s", addr)
@@ -77,7 +78,7 @@ func (n *NSQD) statsdLoop() {
 					client.Gauge(stat, int64(item["value"]))
 				}
 
-				for _, channel := range topic.Channels {  // channel 统计信息
+				for _, channel := range topic.Channels { // channel 统计信息
 					// 找到最后一次连接时的channel
 					lastChannel := ChannelStats{}
 					for _, checkChannel := range lastTopic.Channels {

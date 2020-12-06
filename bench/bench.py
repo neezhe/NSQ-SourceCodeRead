@@ -84,11 +84,11 @@ def _bootstrap(addr):
             'sudo -S chmod +x /usr/local/bin/gpm',
             'cd go/src/github.com/nsqio/nsq && \
                 GOPATH=/home/ubuntu/go PATH=$PATH:/usr/local/go/bin gpm install',
-            'cd go/src/github.com/nsqio/nsq/apps/nsqd && \
+            'cd go/src/apps/nsqd && \
                 GOPATH=/home/ubuntu/go /usr/local/go/bin/go build',
-            'cd go/src/github.com/nsqio/nsq/bench/bench_writer && \
+            'cd go/src/bench/bench_writer && \
                 GOPATH=/home/ubuntu/go /usr/local/go/bin/go build',
-            'cd go/src/github.com/nsqio/nsq/bench/bench_reader && \
+            'cd go/src/bench/bench_reader && \
                 GOPATH=/home/ubuntu/go /usr/local/go/bin/go build',
             'sudo -S mkdir -p /mnt/nsq',
             'sudo -S chmod 777 /mnt/nsq']:
@@ -147,7 +147,7 @@ def run():
             for cmd in [
                     'sudo -S pkill -f nsqd',
                     'sudo -S rm -f /mnt/nsq/*.dat',
-                    'GOMAXPROCS=32 ./go/src/github.com/nsqio/nsq/apps/nsqd/nsqd \
+                    'GOMAXPROCS=32 ./go/src/apps/nsqd/nsqd \
                         --data-path=/mnt/nsq --mem-queue-size=10000000 --max-rdy-count=%s' % (
                         tornado.options.options.rdy
                         )]:
@@ -174,7 +174,7 @@ def run():
                 ssh_client = ssh_connect_with_retries(addr)
                 for cmd in [
                         'GOMAXPROCS=2 \
-                            ./go/src/github.com/nsqio/nsq/bench/bench_writer/bench_writer \
+                            ./go/src/bench/bench_writer/bench_writer \
                             --topic=%s --nsqd-tcp-address=%s:4150 --deadline=\'%s\' --size=%d' % (
                             topic, nsqd_tcp_addr, deadline.strftime('%Y-%m-%d %H:%M:%S'),
                             tornado.options.options.msg_size)]:
@@ -195,7 +195,7 @@ def run():
                     ssh_client = ssh_connect_with_retries(addr)
                     for cmd in [
                             'GOMAXPROCS=8 \
-                                ./go/src/github.com/nsqio/nsq/bench/bench_reader/bench_reader \
+                                ./go/src/bench/bench_reader/bench_reader \
                                 --topic=%s --nsqd-tcp-address=%s:4150 --deadline=\'%s\' --size=%d \
                                 --rdy=%d' % (
                                 topic, nsqd_tcp_addr, deadline.strftime('%Y-%m-%d %H:%M:%S'),

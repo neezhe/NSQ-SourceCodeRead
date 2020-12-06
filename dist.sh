@@ -20,7 +20,7 @@ mkdir -p $DIR/dist/docker
 
 GOFLAGS='-ldflags="-s -w"'
 arch=$(go env GOARCH)
-version=$(awk '/const Binary/ {print $NF}' < $DIR/internal/version/binary.go | sed 's/"//g')
+version=$(awk '/const Binary/ {print $NF}' < $DIR/nsq/internal/version/binary.go | sed 's/"//g')
 goversion=$(go version | awk '{print $3}')
 
 echo "... running tests"

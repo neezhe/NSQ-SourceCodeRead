@@ -16,12 +16,13 @@ import (
 	"syscall"
 	"time"
 
+	"nsq/internal/app"
+	"nsq/internal/protocol"
+	"nsq/internal/version"
+
 	"github.com/bitly/go-hostpool"
 	"github.com/bitly/timer_metrics"
 	"github.com/nsqio/go-nsq"
-	"github.com/nsqio/nsq/internal/app"
-	"github.com/nsqio/nsq/internal/protocol"
-	"github.com/nsqio/nsq/internal/version"
 )
 
 const (
@@ -80,6 +81,7 @@ type TopicHandler struct {
 	publishHandler   *PublishHandler
 	destinationTopic string
 }
+
 //responder() 是通过goroutine异步开启的, 主要是异步消息通知进行最终处理. 然后更新统计状态,
 // 可能发生的问题就是producer发送出现故障了,导致消息没正常发送出去,就重新入队列
 func (ph *PublishHandler) responder() {
@@ -102,7 +104,7 @@ func (ph *PublishHandler) responder() {
 			hostPoolResponse = t.Args[2].(hostpool.HostPoolResponse)
 			address = hostPoolResponse.Host()
 		}
-		fmt.Println("=======ph.respChan==========",string(msg.Body))
+		fmt.Println("=======ph.respChan==========", string(msg.Body))
 		success := t.Error == nil
 
 		if hostPoolResponse != nil {
@@ -114,7 +116,7 @@ func (ph *PublishHandler) responder() {
 		}
 
 		if success { // 前面判断HostPoolResponse,就是从主机池里面获取的producer发送有无错误
-			msg.Finish()  // 正常消费
+			msg.Finish() // 正常消费
 		} else {
 			msg.Requeue(-1) // 重新入队列
 		}
@@ -205,11 +207,12 @@ func filterMessage(js map[string]interface{}, rawMsg []byte) ([]byte, error) {
 func (t *TopicHandler) HandleMessage(m *nsq.Message) error {
 	return t.publishHandler.HandleMessage(m, t.destinationTopic)
 }
+
 //consumer消息消费，主要就是过滤消息, 然后根据均衡策略算法去获取生产者,然后去发送异步消息, 禁用自动响应,使得异步消息结果在responder()方法中异步处理。
 func (ph *PublishHandler) HandleMessage(m *nsq.Message, destinationTopic string) error {
 	var err error
 	msgBody := m.Body
-	fmt.Println("=========HandleMessage=======",string(msgBody))
+	fmt.Println("=========HandleMessage=======", string(msgBody))
 	if *requireJSONField != "" || len(whitelistJSONFields) > 0 {
 		var js map[string]interface{}
 		err = json.Unmarshal(msgBody, &js)
@@ -246,7 +249,7 @@ func (ph *PublishHandler) HandleMessage(m *nsq.Message, destinationTopic string)
 	case ModeHostPool: // 在主机池里面根据算法获取生产者,然后发送异步消息
 		hostPoolResponse := ph.hostPool.Get()
 		p := ph.producers[hostPoolResponse.Host()]
-		err = p.PublishAsync(destinationTopic, msgBody, ph.respChan, m, startTime, hostPoolResponse)//生产者开始发送消息
+		err = p.PublishAsync(destinationTopic, msgBody, ph.respChan, m, startTime, hostPoolResponse) //生产者开始发送消息
 		if err != nil {
 			hostPoolResponse.Mark(err)
 		}
@@ -255,7 +258,7 @@ func (ph *PublishHandler) HandleMessage(m *nsq.Message, destinationTopic string)
 	if err != nil {
 		return err
 	}
-	m.DisableAutoResponse()  //禁用自动响应反馈 (就是auto finish)
+	m.DisableAutoResponse() //禁用自动响应反馈 (就是auto finish)
 	return nil
 }
 
@@ -268,6 +271,7 @@ func hasArg(s string) bool {
 	})
 	return argExist
 }
+
 //主要做了解析命令行参数,根据配置创建producer,consumer,然后producer开启N个goroutine(responder())去异步处理消息与更新统计信息,
 // consumer通过直连或者服务发现形式去进行消费, 最后就是信号源监听程序收尾工作
 func main() {
@@ -328,7 +332,7 @@ func main() {
 	defaultUA := fmt.Sprintf("nsq_to_nsq/%s go-nsq/%s", version.Binary, nsq.VERSION)
 
 	cCfg.UserAgent = defaultUA
-	cCfg.MaxInFlight = *maxInFlight  //多个消费者 maxInFlight 需要配置,否则接收会有问题
+	cCfg.MaxInFlight = *maxInFlight //多个消费者 maxInFlight 需要配置,否则接收会有问题
 	pCfg.UserAgent = defaultUA
 
 	producers := make(map[string]*nsq.Producer)
@@ -358,7 +362,7 @@ func main() {
 
 	var consumerList []*nsq.Consumer
 
-	publisher := &PublishHandler{   // 生产者 处理封装
+	publisher := &PublishHandler{ // 生产者 处理封装
 		addresses:        destNsqdTCPAddrs,
 		producers:        producers,
 		mode:             selectedMode,
@@ -369,7 +373,7 @@ func main() {
 	}
 	for _, topic := range topics {
 		consumer, err := nsq.NewConsumer(topic, *channel, cCfg)
-		consumerList = append(consumerList, consumer)  // 多消费者循环添加到 consumerList ,并添加handlermessage添加
+		consumerList = append(consumerList, consumer) // 多消费者循环添加到 consumerList ,并添加handlermessage添加
 		if err != nil {
 			log.Fatal(err)
 		}

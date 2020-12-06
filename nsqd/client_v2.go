@@ -10,8 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"nsq/internal/auth"
+
 	"github.com/golang/snappy"
-	"github.com/nsqio/nsq/internal/auth"
 )
 
 const defaultBufferSize = 16 * 1024
@@ -26,18 +27,18 @@ const (
 
 type identifyDataV2 struct {
 	ClientID            string `json:"client_id"` //消费者发布者也需要用此来区分
-	Hostname            string `json:"hostname"` //客户端的主机名
+	Hostname            string `json:"hostname"`  //客户端的主机名
 	HeartbeatInterval   int    `json:"heartbeat_interval"`
-	OutputBufferSize    int    `json:"output_buffer_size"` //当 nsqd 写到这个客户端时将会用到的缓存的大小（字节数）
+	OutputBufferSize    int    `json:"output_buffer_size"`    //当 nsqd 写到这个客户端时将会用到的缓存的大小（字节数）
 	OutputBufferTimeout int    `json:"output_buffer_timeout"` //超时后，nsqd 缓冲的数据都会刷新到此客户端
-	FeatureNegotiation  bool   `json:"feature_negotiation"` //用来标示客户端支持的协商特性。如果服务器接受，将会以 JSON 的形式发送支持的特性和元数据。
-	TLSv1               bool   `json:"tls_v1"` //允许 TLS 来连接，客户端读取 IDENTIFY 响应后，必须立即开始 TLS 握手。完成 TLS 握手后服务器将会响应 OK.
-	Deflate             bool   `json:"deflate"` //允许解压缩这次连接
-	DeflateLevel        int    `json:"deflate_level"` //值越高压缩率越好，但是 CPU 负载也高
-	Snappy              bool   `json:"snappy"` //允许 snappy 压缩这次连接，有专门的第3方库来做这个压缩
-	SampleRate          int32  `json:"sample_rate"` //投递此次连接的消息接收率。
-	UserAgent           string `json:"user_agent"` //这个客户端的代理字符串
-	MsgTimeout          int    `json:"msg_timeout"` //配置服务端发送消息给客户端的超时时间
+	FeatureNegotiation  bool   `json:"feature_negotiation"`   //用来标示客户端支持的协商特性。如果服务器接受，将会以 JSON 的形式发送支持的特性和元数据。
+	TLSv1               bool   `json:"tls_v1"`                //允许 TLS 来连接，客户端读取 IDENTIFY 响应后，必须立即开始 TLS 握手。完成 TLS 握手后服务器将会响应 OK.
+	Deflate             bool   `json:"deflate"`               //允许解压缩这次连接
+	DeflateLevel        int    `json:"deflate_level"`         //值越高压缩率越好，但是 CPU 负载也高
+	Snappy              bool   `json:"snappy"`                //允许 snappy 压缩这次连接，有专门的第3方库来做这个压缩
+	SampleRate          int32  `json:"sample_rate"`           //投递此次连接的消息接收率。
+	UserAgent           string `json:"user_agent"`            //这个客户端的代理字符串
+	MsgTimeout          int    `json:"msg_timeout"`           //配置服务端发送消息给客户端的超时时间
 }
 
 type identifyEvent struct {
@@ -51,7 +52,7 @@ type clientV2 struct {
 	// 64bit atomic vars need to be first for proper alignment on 32bit platforms
 	//两个变量来判断客户端是否准备好接收消息
 	ReadyCount    int64 //ReadyCount变量就是我们所说的RDY计数，用于表示当前客户端能够接收的消息数量，直接由消费者设置下来的rdy容量，这个值不会根据消息的处理而变化，InFlightCount不允许大于ReadyCount。
-	InFlightCount int64	//InFlightCount，该变量表示当前仍在“飞行中”即仍在发送过程中或是客户端处理过程中的消息数量
+	InFlightCount int64 //InFlightCount，该变量表示当前仍在“飞行中”即仍在发送过程中或是客户端处理过程中的消息数量
 	MessageCount  uint64
 	FinishCount   uint64
 	RequeueCount  uint64
@@ -311,6 +312,7 @@ func (p *prettyConnectionState) GetVersion() string {
 		return fmt.Sprintf("Unknown %d", p.Version)
 	}
 }
+
 //在这里会检查使用这条连接的客户端是否准备好接收消息：1.具体来说是通过下面两个变量（ReadyCount和InFlightCount）来判断客户端是否准备好接收消息
 //ReadyCount变量就是我们所说的RDY计数，用于表示当前客户端还能够接收的消息数量。
 //InFlightCount，该变量表示当前仍在“飞行中”即仍在发送过程中或是客户端处理过程中的消息数量
@@ -323,13 +325,13 @@ func (c *clientV2) IsReadyForMessages() bool {
 	inFlightCount := atomic.LoadInt64(&c.InFlightCount)
 
 	c.ctx.nsqd.logf(LOG_DEBUG, "[%s] state rdy: %4d inflt: %4d", c, readyCount, inFlightCount)
-//如果readyCount <= 0成立，那么此时客户端无法接收任何一条消，所以此时不应向客户端发送消息。这个变量在客户端发送RDY命令后才会大于0
-//如果inFlightCount >= readyCount成立，那么正在发送的消息和客户端正在处理的消息数量已经超出了客户端的承受范围，所以此时也不应向客户端发送消息。
-//ReadyCount，即表示客户端能够处理消息的数量。
+	//如果readyCount <= 0成立，那么此时客户端无法接收任何一条消，所以此时不应向客户端发送消息。这个变量在客户端发送RDY命令后才会大于0
+	//如果inFlightCount >= readyCount成立，那么正在发送的消息和客户端正在处理的消息数量已经超出了客户端的承受范围，所以此时也不应向客户端发送消息。
+	//ReadyCount，即表示客户端能够处理消息的数量。
 	if inFlightCount >= readyCount || readyCount <= 0 {
 		return false
 	}
-//这样，我们就知道了nsqd什么时候才会向客户端推送消息，所以关于nsqd上的RDY机制，我们只需弄清楚有哪些地方会更改以上变量即可。
+	//这样，我们就知道了nsqd什么时候才会向客户端推送消息，所以关于nsqd上的RDY机制，我们只需弄清楚有哪些地方会更改以上变量即可。
 	return true
 }
 

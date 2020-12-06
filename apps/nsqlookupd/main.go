@@ -8,12 +8,13 @@ import (
 	"sync"
 	"syscall"
 
+	"nsq/internal/lg"
+	"nsq/internal/version"
+	"nsq/nsqlookupd"
+
 	"github.com/BurntSushi/toml"
 	"github.com/judwhite/go-svc/svc"
 	"github.com/mreiferson/go-options"
-	"github.com/nsqio/nsq/internal/lg"
-	"github.com/nsqio/nsq/internal/version"
-	"github.com/nsqio/nsq/nsqlookupd"
 )
 
 //nsqlookupd实际工作中主要调用的是Init，Start,Stop三个函数。
@@ -38,6 +39,7 @@ func nsqlookupdFlagSet(opts *nsqlookupd.Options) *flag.FlagSet {
 
 	return flagSet
 }
+
 //svc采用了模板设计模式在负责初始化、启动、关闭进程。
 //这些初始化Init、启动Start和关闭Stop方法通过接口定义，交给具体进程去实现（此处program实现了这几个方法）。而svc则负责管理何时去调用这些方法。
 //program结构实现了svc的Service接口。因此可以交给svc来负责管理program的初始化、启动和关闭动作。
@@ -72,8 +74,7 @@ func (p *program) Init(env svc.Environment) error {
 //
 //nsqloopupd进程退出时，调用NSQLookupd实例的Exit()方法，关闭TCP和HTTP监听，主线程(goroutine)等待子线程(goroutine)退出，程序退出
 
-
-func (p *program) Start() error {  //这个代码在svc.Run中会被调用。此处才是nsqlookupd的主体功能。
+func (p *program) Start() error { //这个代码在svc.Run中会被调用。此处才是nsqlookupd的主体功能。
 	opts := nsqlookupd.NewOptions()
 
 	flagSet := nsqlookupdFlagSet(opts)
@@ -110,6 +111,7 @@ func (p *program) Start() error {  //这个代码在svc.Run中会被调用。此
 
 	return nil
 }
+
 //Stop函数接受外界的signal，如果收到syscall.SIGINT和syscall.SIGTERM信号，就会被调用。svc这个包负责监听这两个信号，在main函数中已经指明了。
 //syscall.SIGINT：ctrl+c信号os.Interrupt，中断。
 //syscall.SIGTERM：pkill信号syscall.SIGTERM，关闭此服务。

@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"nsq/internal/clusterinfo"
+	"nsq/internal/http_api"
+	"nsq/internal/test"
+
 	"github.com/nsqio/go-nsq"
-	"github.com/nsqio/nsq/internal/clusterinfo"
-	"github.com/nsqio/nsq/internal/http_api"
-	"github.com/nsqio/nsq/internal/test"
 )
 
 const (

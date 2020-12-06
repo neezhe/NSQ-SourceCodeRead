@@ -5,10 +5,11 @@ import (
 	"os"
 	"testing"
 
+	"nsq/internal/test"
+	"nsq/nsqd"
+
 	"github.com/BurntSushi/toml"
 	"github.com/mreiferson/go-options"
-	"github.com/nsqio/nsq/internal/test"
-	"github.com/nsqio/nsq/nsqd"
 )
 
 func TestConfigFlagParsing(t *testing.T) {

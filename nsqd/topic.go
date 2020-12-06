@@ -8,10 +8,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"nsq/internal/lg"
+	"nsq/internal/quantile"
+	"nsq/internal/util"
+
 	"github.com/nsqio/go-diskqueue"
-	"github.com/nsqio/nsq/internal/lg"
-	"github.com/nsqio/nsq/internal/quantile"
-	"github.com/nsqio/nsq/internal/util"
 )
 
 //所有topic列表会存储在NSQD.topicMap[]里面
@@ -79,9 +80,9 @@ func NewTopic(topicName string, ctx *context, deleteCallback func(*Topic)) *Topi
 		//diskQueue是从nsq项目中抽取而来，将它单独作为一个项目go-diskqueue。它本身比较简单，只有一个源文件diskqueue.go。
 		t.backend = diskqueue.New( //注意这个diskQueue是一个私有的，必须通过其自带方法才能访问。小写都是针对包而言的，所有的小写都不能被其他包访问，但是能被本包访问。这里的New是大写，也就是说通过暴露出来的方法来操作包的私有化变量。
 			topicName,
-			ctx.nsqd.getOpts().DataPath,                            // 数据存储路径，当前目录或指定的目录
-			ctx.nsqd.getOpts().MaxBytesPerFile,                     // 存储文件的最大字节数
-			int32(minValidMsgLength),                               // 最小的有效消息的长度
+			ctx.nsqd.getOpts().DataPath,        // 数据存储路径，当前目录或指定的目录
+			ctx.nsqd.getOpts().MaxBytesPerFile, // 存储文件的最大字节数
+			int32(minValidMsgLength),           // 最小的有效消息的长度
 			int32(ctx.nsqd.getOpts().MaxMsgSize)+minValidMsgLength, // 最大的有效消息的长度
 			ctx.nsqd.getOpts().SyncEvery,                           // 单次同步刷新消息的数量，即当消息数量达到 SyncEvery 的数量时，需要执行刷新动作（否则会留在操作系统缓冲区）
 			ctx.nsqd.getOpts().SyncTimeout,                         // 两次同步刷新的时间间隔，即两次同步操作的最大间隔
@@ -246,11 +247,11 @@ func (t *Topic) put(m *Message) error {
 	//无论是memoryMsgChan还是backend中的消息，都在topic的messagePump中被读取到各个channel中去。
 	select {
 	case t.memoryMsgChan <- m: //将这条消息直接塞入内存管道，mesasgePump开始处理。
-	default:                                          //如果内存消息管道满了(memoryMsgChan的容量由 getOpts().MemQueueSize设置)，那么就放入到后面的持久化存储里面
+	default: //如果内存消息管道满了(memoryMsgChan的容量由 getOpts().MemQueueSize设置)，那么就放入到后面的持久化存储里面
 		b := bufferPoolGet()                          //从缓冲池中获取缓冲，可复用buffer，减少对象生成，阅读一下sync.Pool包
 		err := writeMessageToBackend(b, m, t.backend) //将消息写入持久化消息队列，backend是创建topic的时候建立的diskqueue
 		bufferPoolPut(b)                              // 将buffer放回缓存池
-		t.ctx.nsqd.SetHealth(err) //调用SetHealth函数将writeMessageToBackend的返回值写入errValue变量。
+		t.ctx.nsqd.SetHealth(err)                     //调用SetHealth函数将writeMessageToBackend的返回值写入errValue变量。
 		if err != nil {
 			t.ctx.nsqd.logf(LOG_ERROR,
 				"TOPIC(%s) ERROR: failed to write message to backend - %s",
@@ -296,7 +297,7 @@ func (t *Topic) messagePump() { //此函数只在NewTopic的时候被调用。
 		}
 		break
 	}
-	t.RLock() //避免锁竞争, 所以缓存已存在的 channel
+	t.RLock()                        //避免锁竞争, 所以缓存已存在的 channel
 	for _, c := range t.channelMap { //拿到这个topic的所有channel,多线程中遍历类中一个成员变量的操作, 需要给类加锁
 		chans = append(chans, c)
 	}
@@ -313,7 +314,7 @@ func (t *Topic) messagePump() { //此函数只在NewTopic的时候被调用。
 	for {
 		select { //阻塞在这5个chan
 		case msg = <-memoryMsgChan: //内存队列,注意每个case互不干扰，msg的值不会进入到下面backendChan的case中
-		case buf = <-backendChan:         //磁盘队列（文件里）
+		case buf = <-backendChan: //磁盘队列（文件里）
 			msg, err = decodeMessage(buf) //磁盘读出的消息要转换成和内存中一致的消息格式，即message的结构体形式。
 			if err != nil {
 				t.ctx.nsqd.logf(LOG_ERROR, "failed to decode message - %s", err)
@@ -354,7 +355,7 @@ func (t *Topic) messagePump() { //此函数只在NewTopic的时候被调用。
 		for i, channel := range chans { //遍历每个channel,然后将消息一个个发送到channel的流程里面.看到没，此处就是将一条topic的消息多播到多有的channel,然后消费者通过订阅的channel读取，如果一个channel上面有多个consumer，则随机。
 			//到这里只有一种可能，有新消息来了, 那么遍历channel，调用PutMessage发送消息
 			chanMsg := msg //为啥要拷贝？因为每个channel需要一个独立的消息实例
-			if i > 0 { // 若此 topic 只有一个 channel，则不需要显式地拷贝了，下面就是在显式拷贝。
+			if i > 0 {     // 若此 topic 只有一个 channel，则不需要显式地拷贝了，下面就是在显式拷贝。
 				chanMsg = NewMessage(msg.ID, msg.Body)
 				chanMsg.Timestamp = msg.Timestamp
 				chanMsg.deferred = msg.deferred

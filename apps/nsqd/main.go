@@ -10,12 +10,15 @@ import (
 	"syscall"
 	"time"
 
+	"nsq/internal/lg"
+
+	"nsq/internal/version"
+
+	"nsq/nsqd"
+
 	"github.com/BurntSushi/toml"
 	"github.com/judwhite/go-svc/svc"
 	"github.com/mreiferson/go-options"
-	"github.com/nsqio/nsq/internal/lg"
-	"github.com/nsqio/nsq/internal/version"
-	"github.com/nsqio/nsq/nsqd"
 )
 
 type program struct {

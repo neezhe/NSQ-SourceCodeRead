@@ -8,8 +8,9 @@ import (
 	"strconv"
 	"time"
 
+	"nsq/internal/version"
+
 	"github.com/nsqio/go-nsq"
-	"github.com/nsqio/nsq/internal/version"
 )
 
 //当连接建立成功后（不要忘记在这之前发送了一个MagicV1的消息），会执行下面这个回调函数。

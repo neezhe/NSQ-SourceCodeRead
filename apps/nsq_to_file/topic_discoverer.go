@@ -6,10 +6,11 @@ import (
 	"sync"
 	"time"
 
+	"nsq/internal/clusterinfo"
+	"nsq/internal/http_api"
+	"nsq/internal/lg"
+
 	"github.com/nsqio/go-nsq"
-	"github.com/nsqio/nsq/internal/clusterinfo"
-	"github.com/nsqio/nsq/internal/http_api"
-	"github.com/nsqio/nsq/internal/lg"
 )
 
 type TopicDiscoverer struct {
@@ -79,7 +80,7 @@ forloop:
 				continue
 			}
 			t.updateTopics(newTopics) //获取的topics交由函数updateTopics()去处理
-		case <-t.termChan:  //收中断,退出信号,遍历topics逐个关闭消费,并退出循环
+		case <-t.termChan: //收中断,退出信号,遍历topics逐个关闭消费,并退出循环
 			for _, fl := range t.topics {
 				close(fl.termChan)
 			}

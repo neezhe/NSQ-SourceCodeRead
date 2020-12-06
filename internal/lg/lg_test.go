@@ -3,7 +3,7 @@ package lg
 import (
 	"testing"
 
-	"github.com/nsqio/nsq/internal/test"
+	"nsq/internal/test"
 )
 
 type mockLogger struct {

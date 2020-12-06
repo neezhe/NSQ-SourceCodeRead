@@ -3,7 +3,7 @@ package util
 import (
 	"testing"
 
-	"github.com/nsqio/nsq/internal/test"
+	"nsq/internal/test"
 )
 
 func BenchmarkUniqRands5of5(b *testing.B) {

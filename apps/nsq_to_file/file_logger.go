@@ -11,8 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"nsq/internal/lg"
+
 	"github.com/nsqio/go-nsq"
-	"github.com/nsqio/nsq/internal/lg"
 )
 
 type FileLogger struct {
@@ -38,12 +39,12 @@ type FileLogger struct {
 }
 
 func NewFileLogger(logf lg.AppLogFunc, opts *Options, topic string, cfg *nsq.Config) (*FileLogger, error) {
-	computedFilenameFormat, err := computeFilenameFormat(opts, topic)  // 计算文件名
+	computedFilenameFormat, err := computeFilenameFormat(opts, topic) // 计算文件名
 	if err != nil {
 		return nil, err
 	}
 
-	consumer, err := nsq.NewConsumer(topic, opts.Channel, cfg)  // 初始化消息消费者
+	consumer, err := nsq.NewConsumer(topic, opts.Channel, cfg) // 初始化消息消费者
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +59,7 @@ func NewFileLogger(logf lg.AppLogFunc, opts *Options, topic string, cfg *nsq.Con
 		termChan:       make(chan bool),
 		hupChan:        make(chan bool),
 	}
-	consumer.AddHandler(f)  // 接收到的消息通过channel (logChan )转发,在router()方法进行处理
+	consumer.AddHandler(f) // 接收到的消息通过channel (logChan )转发,在router()方法进行处理
 
 	err = consumer.ConnectToNSQDs(opts.NSQDTCPAddrs) // 连接消费者
 	if err != nil {
@@ -78,13 +79,14 @@ func (f *FileLogger) HandleMessage(m *nsq.Message) error {
 	f.logChan <- m
 	return nil
 }
+
 //router( ) 方法主要功能是开启定时同步落盘数据, 等待接收新消息,记录阈值,满值在进行同步落盘.
 // 等待挂起,中断,退出信号去关闭同步文件,停止consumer消费.
 func (f *FileLogger) router() {
 	pos := 0
 	output := make([]*nsq.Message, f.opts.MaxInFlight)
 	sync := false
-	ticker := time.NewTicker(f.opts.SyncInterval)  // 同步定时器
+	ticker := time.NewTicker(f.opts.SyncInterval) // 同步定时器
 	closeFile := false
 	exit := false
 
@@ -94,11 +96,11 @@ func (f *FileLogger) router() {
 			sync = true
 			closeFile = true
 			exit = true
-		case <-f.termChan:  // 接收到中断,程序退出信号, 关闭定时器,停止消息消费,同步文件
+		case <-f.termChan: // 接收到中断,程序退出信号, 关闭定时器,停止消息消费,同步文件
 			ticker.Stop()
 			f.consumer.Stop()
 			sync = true
-		case <-f.hupChan:  // 接收到挂起暂停信号, 关闭并同步文件
+		case <-f.hupChan: // 接收到挂起暂停信号, 关闭并同步文件
 			sync = true
 			closeFile = true
 		case <-ticker.C: // 同步定时器, 是否需要切割文件, 在进行同步
@@ -110,7 +112,7 @@ func (f *FileLogger) router() {
 				}
 			}
 			sync = true
-		case m := <-f.logChan:  // 接收到新的消息, 是否需要切割文件, 然后写入数据流, 并记录阈值 满了在同步
+		case m := <-f.logChan: // 接收到新的消息, 是否需要切割文件, 然后写入数据流, 并记录阈值 满了在同步
 			if f.needsRotation() {
 				f.updateFile()
 				sync = true
@@ -147,7 +149,7 @@ func (f *FileLogger) router() {
 					output[pos] = nil
 				}
 			}
-			sync = false  // 重置标志位
+			sync = false // 重置标志位
 		}
 		// FileLogger Close() 方法功能概要
 		// 1. 释放文件资源之前先同步数据
@@ -162,6 +164,7 @@ func (f *FileLogger) router() {
 		}
 	}
 }
+
 // FileLogger Close() 方法功能概要
 // 1. 释放文件资源之前先同步数据
 // 2. 如果需要，将文件从工作目录移动到输出目录，注意不要覆盖现有文件,如果文件移动出现失败, 使用rev序号拼接文件名进行重试
@@ -289,7 +292,7 @@ func (f *FileLogger) needsRotation() bool {
 func (f *FileLogger) updateFile() {
 	f.Close() // uses current f.filename and f.rev to resolve rename dst conflict
 
-	filename := f.currentFilename()  // 文件名格式 "<TOPIC>.<HOST><REV>.<DATETIME>.log"
+	filename := f.currentFilename() // 文件名格式 "<TOPIC>.<HOST><REV>.<DATETIME>.log"
 	if filename != f.filename {
 		f.rev = 0 // reset revision to 0 if it is a new filename
 	} else {
@@ -298,7 +301,7 @@ func (f *FileLogger) updateFile() {
 	f.filename = filename
 	f.openTime = time.Now()
 
-	fullPath := path.Join(f.opts.WorkDir, filename)   //  创建文件夹
+	fullPath := path.Join(f.opts.WorkDir, filename) //  创建文件夹
 	err := makeDirFromPath(f.logf, fullPath)
 	if err != nil {
 		f.logf(lg.FATAL, "[%s/%s] unable to create dir: %s", f.topic, f.opts.Channel, err)

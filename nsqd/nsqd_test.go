@@ -14,7 +14,7 @@ import (
 
 	"nsq/internal/http_api"
 	"nsq/internal/test"
-	"nsqlookupd"
+	"nsq/nsqlookupd"
 )
 
 const (

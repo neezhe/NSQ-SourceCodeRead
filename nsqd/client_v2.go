@@ -124,7 +124,7 @@ func newClientV2(id int64, conn net.Conn, ctx *context) *clientV2 {
 		// 此处是继承，调用父类的方法，方法中用到的属性只和父类有关，除非子类重写这个方法。
 		//所以newClientV2调用Write函数实际上是Conn在调用write函数。
 
-		Reader: bufio.NewReaderSize(conn, defaultBufferSize), //实例化bufio.Reader对象生成带缓冲的读取器,指定缓存大小defaultBufferSize，第一个参数是没有缓冲的读取器，
+		Reader: bufio.NewReaderSize(conn, defaultBufferSize), //实例化bufio.Reader对象生成带缓冲的读取器,指定缓存大小defaultBufferSize
 		Writer: bufio.NewWriterSize(conn, defaultBufferSize),
 
 		OutputBufferSize:    defaultBufferSize,
@@ -313,7 +313,6 @@ func (p *prettyConnectionState) GetVersion() string {
 	}
 }
 
-//在这里会检查使用这条连接的客户端是否准备好接收消息：1.具体来说是通过下面两个变量（ReadyCount和InFlightCount）来判断客户端是否准备好接收消息
 //ReadyCount变量就是我们所说的RDY计数，用于表示当前客户端还能够接收的消息数量。
 //InFlightCount，该变量表示当前仍在“飞行中”即仍在发送过程中或是客户端处理过程中的消息数量
 func (c *clientV2) IsReadyForMessages() bool {

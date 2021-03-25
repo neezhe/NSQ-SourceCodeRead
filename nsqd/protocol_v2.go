@@ -220,7 +220,6 @@ func (p *protocolV2) Exec(client *clientV2, params [][]byte) ([]byte, error) {
 }
 
 //nsqd 针对每一个消费者的消息的处理循环
-//1. nsqd每个连接上来的客户端会创建一个protocolV2.messagePump协程负责订阅消息（这个协程也在IOLoop被开启），做超时处理；
 //2. 客户端发送SUB命令后，SUB()函数会通知客户端的messagePump协程去订阅这个channel的消息；
 //3. messagePump协程收到订阅更新的管道消息后，会等待在Channel.memoryMsgChan和Channel.backend.ReadChan()上；
 //4. 只要有生产者发送消息后，channel.memoryMsgChan便会有新的消息到来，其中一个客户端就能获得管道的消息；
@@ -295,13 +294,8 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 			backendMsgChan = subChannel.backend.ReadChan()
 			flusherChan = outputBufferTicker.C //开始接受消息时才打开这个flush的定时开关
 		}
-		//for循环中select的语法见youdao
-		select { // 这里负责执行Client 的各种事件
-		//语法：1.关闭channel后，可以继续向channel接收数据（接收的为该类型的0值，可解除阻塞），但是无法向其写入数据。
-		//2.被初始化但是没有值的channel或者没有初始化或者被设为nil的channel，其case永远不会被进入，它没有被分配内存空间,相当于这个channel被select忽略。
-		//3.无缓冲的channel，"没数据取"和"数据没被取走的情况下写"都会阻塞
-		//4.有缓冲的，没数据的时候才阻塞，写满的时候才阻塞，其他时候不阻塞。
-		case <-flusherChan: // 消费者独有。定时刷新消息发送缓冲区。发送到哪里？发送到conn上，也就是消费者。
+		select {
+		case <-flusherChan: //定时触发此channel，隔一段时间flush一次
 			client.writeLock.Lock()
 			err = client.Flush()
 			client.writeLock.Unlock()
@@ -309,8 +303,7 @@ func (p *protocolV2) messagePump(client *clientV2, startedChan chan bool) { //pu
 				goto exit
 			}
 			flushed = true
-			// 客户端处理消息的能力发生了变化会触发此处解除阻塞，比如客户端刚消费了某个消息
-		case <-client.ReadyStateChan: //消费者独有。这个case下面没有什么要处理的，目的就是解除阻塞，进行下一轮for循环重新执行一下上面的if语句。
+		case <-client.ReadyStateChan: //这个case下面没有什么要处理的，目的就是解除阻塞，进行下一轮for循环重新执行一下上面的if语句。
 		case subChannel = <-subEventChan: //消费者独有。subChannel在下面被用到，subChannel就是订阅Chnanel,Client需要发送一个SUB请求来订阅Channel
 			// 将 subEventChan 重置为nil，原因表示一个消费者订阅了一个channel后就，以后就一致监视这个channel,所以这个case只在订阅的时候被使用一次。
 			// 而置为nil的原因是，在SUB命令请求方法中第一行即为检查此客户端是否处于 stateInit 状态，

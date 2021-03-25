@@ -23,12 +23,12 @@ import (
 
 type program struct {
 	once sync.Once
-	nsqd *nsqd.NSQD //此处并非组合，组合只能是匿名对象，所以此处就相当于只是记录一下。
+	nsqd *nsqd.NSQD
 }
 
 func main() {
 	prg := &program{}
-	if err := svc.Run(prg, syscall.SIGINT, syscall.SIGTERM); err != nil { //nsqd也是通过go-svc启动
+	if err := svc.Run(prg, syscall.SIGINT, syscall.SIGTERM); err != nil {
 		logFatal("%s", err)
 	}
 }
@@ -41,21 +41,18 @@ func (p *program) Init(env svc.Environment) error {
 	return nil
 }
 
-//start返回后会进入到svc的代码里面进行等待监听信号量，如果用户杀进程，就调用下面的stop
 func (p *program) Start() error {
 	opts := nsqd.NewOptions()    // 1. 通过程序默认的参数构建 options 实例
 	flagSet := nsqdFlagSet(opts) // 2. 将 opts 结合命令行参数集进行进一步初始化
 	flagSet.Parse(os.Args[1:])   //nolint 因为用到了NewFlagSet,所以此处就需要指定Parse的参数，如果用的是默认Flag,则其参数无需指定
 
 	rand.Seed(time.Now().UTC().UnixNano()) //设置随机数种子，后面所有的随机数的操作都是根据这个种子来的，能确保是随机的。
-	// 3. 若 version 参数存在，则打印版本号，然后退出
 	//flagSet.Lookup("version").Value.String()这一句只会打印这个变量的字符串形式，内部会将bool转化为string
 	if flagSet.Lookup("version").Value.(flag.Getter).Get().(bool) { //对于非string类型的flag取值才会用到flag.Getter，这玩在flag包里实现了除string类型外的Get方法，当然绑定自定义变量的时候也需要自己实现了String/Set/Get方法。
 		fmt.Println(version.String("nsqd"))
 		os.Exit(0)
 	}
 	// 4. 若用户指定了自定义配置文件，则加载配置文件，读取配置文件，校验配置文件合法性
-	// 读取解析配置文件采用的是第三方库 https://github.com/BurntSushi/toml
 	var cfg config
 	configFile := flagSet.Lookup("config").Value.String() //因为config是字符串类型的，所以此处就不会用到Getter
 	if configFile != "" {
@@ -66,7 +63,7 @@ func (p *program) Start() error {
 	}
 	cfg.Validate() //验证配置是否合法，主要关于TLS的验证
 
-	options.Resolve(opts, flagSet, cfg) //要学习反射，把下面这个函数看懂就行了，这里面为何用反射，因为，我们要把cfg的值赋值给opts，但是却不知道cfg中值的具体类型，在运行时才能确定的变量需要用反射来处理
+	options.Resolve(opts, flagSet, cfg) //要学习反射，把下面这个函数看懂就行了，这里面为何用反射？
 	// 5. 通过给定参数 opts 构建 nsqd 实例
 	nsqd, err := nsqd.New(opts)
 	if err != nil {

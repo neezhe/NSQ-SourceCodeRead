@@ -59,7 +59,7 @@ type NSQD struct {
 	clientLock sync.RWMutex
 	clients    map[int64]Client //标识符id对应的client，来一个client就存储一下。存的是订阅了此nsqd所维护的topic的客户端实体
 
-	lookupPeers atomic.Value //需要并发保护的变量，// nsqd与nsqlookupd之间网络连接抽象实体
+	lookupPeers atomic.Value //需要并发保护的变量，// nsqjd与nsqlookupd之间网络连接抽象实体
 
 	tcpListener   net.Listener //同样，一个NSQD实例有3个这种服务
 	httpListener  net.Listener
@@ -76,7 +76,6 @@ type NSQD struct {
 	ci *clusterinfo.ClusterInfo
 }
 
-//New的写法没有reciver
 func New(opts *Options) (*NSQD, error) {
 	var err error
 
@@ -96,7 +95,7 @@ func New(opts *Options) (*NSQD, error) {
 	//记录以下当前时间和文件路径并把所有的map/chan都初始化一下。
 	n := &NSQD{
 		startTime:            time.Now(),
-		topicMap:             make(map[string]*Topic), //make和new的功能相似都是分配空间，但是make只能用在slice/map/chan上，因为这3中类型在使用前必须进行初始化,结构体中只是类型声明，此处进行了初始化，相当于topicMap：=map[string]*Topic{}
+		topicMap:             make(map[string]*Topic), //make和new的功能相似都是分配空间，但是make只能用在slice/map/chan上
 		clients:              make(map[int64]Client),  //标识符id对应的client，来一个client就存储一下。存的是订阅了此nsqd所维护的topic的客户端实体
 		exitChan:             make(chan int),
 		notifyChan:           make(chan interface{}),
@@ -249,12 +248,12 @@ func (n *NSQD) RemoveClient(clientID int64) {
 }
 
 func (n *NSQD) Main() error {
-	ctx := &context{n} //1.首先构建一个Context实例（纯粹nsqd实例的wrapper）
+	ctx := &context{n}
 
 	exitCh := make(chan error) // 2. 同 NSQLookupd 类似，构建一个退出 hook 函数，且在退出时仅执行一次
 	var once sync.Once
 	exitFunc := func(err error) {
-		once.Do(func() { //无论once处在多少个协程里面，Do函数的参数表示的函数只会被执行一次。
+		once.Do(func() {
 			if err != nil {
 				n.logf(LOG_FATAL, "%s", err)
 			}
@@ -263,10 +262,10 @@ func (n *NSQD) Main() error {
 	}
 	//tcp服务可以当生产者发消息也可以当消费者订阅消息，http服务可以用来当生产者发消息（不可以订阅）还可以提供给nsqadmin获取该nsqd本地topic和channel信息
 	tcpServer := &tcpServer{ctx: ctx}
-	n.waitGroup.Wrap(func() { //Wrap里面开启了一个协程运行func(){...}，就会运行exitFunc
+	n.waitGroup.Wrap(func() {
 		exitFunc(protocol.TCPServer(n.tcpListener, tcpServer, n.logf)) //tcp服务，4150端口，tcp的处理函数和nsqlookupd中的不一样。它可以PUB
 	})
-	//注意：下面实现了如何根据listen句柄来构建http服务，学了一招。
+	//注意：下面实现了如何根据listen句柄来构建http服务
 	httpServer := newHTTPServer(ctx, false, n.getOpts().TLSRequired == TLSRequired)
 	n.waitGroup.Wrap(func() {
 		exitFunc(http_api.Serve(n.httpListener, httpServer, "HTTP", n.logf)) //http服务。可以PUB
